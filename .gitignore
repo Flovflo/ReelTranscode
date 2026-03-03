@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtualenv and build
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Test/cache
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Runtime artifacts
+reports/*.json
+reports/*.csv
+reports/*.log
+state/
+tmp/
+
+# macOS
+.DS_Store

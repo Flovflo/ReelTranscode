@@ -1,0 +1,103 @@
+from pathlib import Path
+
+from reeltranscode.config import AppConfig
+from reeltranscode.decision_engine import DecisionEngine
+from reeltranscode.models import MediaInfo, StreamInfo
+from reeltranscode.planner import CommandPlanner
+
+
+def _media(path: str, format_name: str, streams: list[dict]) -> MediaInfo:
+    return MediaInfo(
+        path=Path(path),
+        format_name=format_name,
+        duration=7000.0,
+        bit_rate=22_000_000,
+        size=13_000_000_000,
+        streams=[StreamInfo.from_probe(s) for s in streams],
+        raw_probe={},
+    )
+
+
+def test_plan_for_sample1_keeps_video_copy():
+    cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4"}})
+    media = _media(
+        "/Volumes/Media/Movies/Zootopia.2.2025.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "pix_fmt": "yuv420p10le",
+                "width": 3840,
+                "height": 1608,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "fra"},
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 2,
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "tags": {"language": "eng"},
+                "disposition": {"default": 0},
+            },
+        ],
+    )
+    engine = DecisionEngine(cfg)
+    decision, comp = engine.decide(media)
+
+    planner = CommandPlanner(cfg)
+    plan = planner.build(media, decision, comp, Path("/Volumes/Media/Movies"))
+
+    assert plan.steps
+    cmd = plan.steps[0].command
+    assert "-c:v" in cmd
+    assert cmd[cmd.index("-c:v") + 1] == "copy"
+    assert str(plan.target_path).endswith(".mp4")
+
+
+def test_video_transcode_plan_uses_videotoolbox():
+    cfg = AppConfig.from_dict({"video": {"preferred_codec": "hevc"}})
+    media = _media(
+        "/Volumes/Media/Movies/movie_av1.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "av1",
+                "pix_fmt": "yuv420p10le",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "eng"},
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    engine = DecisionEngine(cfg)
+    decision, comp = engine.decide(media)
+    planner = CommandPlanner(cfg)
+    plan = planner.build(media, decision, comp, Path("/Volumes/Media/Movies"))
+
+    cmd = plan.steps[0].command
+    assert "hevc_videotoolbox" in cmd

@@ -1,0 +1,84 @@
+# ReelTranscode production config (macOS / Apple Silicon)
+dry_run: false
+
+watch:
+  folders:
+    - /Volumes/Media/Movies
+    - /Volumes/Media/TV
+  recursive: true
+  allowed_extensions: [.mkv, .mp4, .mov, .m4v, .ts, .m2ts]
+  stable_wait_seconds: 300
+  stable_checks: 3
+  poll_interval_seconds: 10
+
+remux:
+  preferred_container: mp4
+  faststart: true
+  keep_chapters: true
+  keep_attachments: false
+
+audio:
+  preferred_codec_multichannel: eac3
+  preferred_codec_stereo: aac
+  fallback_codec: ac3
+  max_channels: 8
+  preferred_languages: [fra, eng]
+  keep_original_compatible_tracks: true
+
+subtitles:
+  mode: convert_or_externalize
+  convert_text_to_mov_text: true
+  external_subtitle_format: srt
+  preserve_forced_only_when_needed: false
+  ocr_image_subtitles: false
+
+dolby_vision:
+  preserve_when_safe: true
+  safe_profiles: ["8.1"]
+  remux_dv_from_mkv_to_mp4_is_safe: false
+  # preserve_hdr10 | force_sdr
+  fragile_fallback: preserve_hdr10
+
+video:
+  preferred_codec: hevc
+  fallback_codec: h264
+  force_cfr: false
+  keyframe_interval_seconds: 2
+  hevc_tag: hvc1
+  max_4k_fps: 60
+
+output:
+  # keep_original | archive_original | replace_original
+  mode: keep_original
+  output_root: /Volumes/Media-Optimized
+  archive_root: /Volumes/Media-Archive
+  overwrite: false
+  delete_original_after_success: false
+
+concurrency:
+  max_workers: 2
+  io_nice_sleep_seconds: 0.0
+
+retry:
+  max_attempts: 3
+  backoff_initial_seconds: 5
+  backoff_max_seconds: 90
+
+paths:
+  state_db: ./state/reeltranscode.db
+  reports_dir: ./reports
+  csv_summary: ./reports/summary.csv
+  temp_dir: ./tmp
+
+tooling:
+  ffmpeg_bin: /opt/homebrew/bin/ffmpeg
+  ffprobe_bin: /opt/homebrew/bin/ffprobe
+
+validation:
+  verify_duration_tolerance_seconds: 2.0
+  verify_stream_count_delta_max: 4
+  run_post_ffprobe: true
+
+logging:
+  level: INFO
+  json_logs: false
