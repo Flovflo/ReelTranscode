@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 from reeltranscode.config import AppConfig
@@ -18,7 +19,7 @@ class Reporter:
     def write_job_report(self, report: JobReport) -> Path:
         report_path = self.config.paths.reports_dir / f"{report.job_id}.json"
         with report_path.open("w", encoding="utf-8") as handle:
-            json.dump(report.__dict__, handle, indent=2, ensure_ascii=True)
+            json.dump(asdict(report), handle, indent=2, ensure_ascii=True)
         self._append_csv(report)
         return report_path
 

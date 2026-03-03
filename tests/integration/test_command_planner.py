@@ -63,6 +63,8 @@ def test_plan_for_sample1_keeps_video_copy():
     cmd = plan.steps[0].command
     assert "-c:v" in cmd
     assert cmd[cmd.index("-c:v") + 1] == "copy"
+    assert "-tag:v" in cmd
+    assert cmd[cmd.index("-tag:v") + 1] == "hvc1"
     assert str(plan.target_path).endswith(".mp4")
 
 

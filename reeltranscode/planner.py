@@ -116,7 +116,12 @@ class CommandPlanner:
         compatibility: CompatibilityDetails,
     ) -> list[str]:
         if decision.strategy not in {Strategy.VIDEO_ONLY, Strategy.FULL_PIPELINE} and not compatibility.requires_video_transcode:
-            return ["-c:v", "copy"]
+            args = ["-c:v", "copy"]
+            target_is_mp4 = self._target_suffix() == ".mp4"
+            source = media.primary_video
+            if target_is_mp4 and source and (source.codec_name or "").lower() == "hevc":
+                args.extend(["-tag:v", self.config.video.hevc_tag])
+            return args
 
         source = media.primary_video
         if source is None:
@@ -256,9 +261,15 @@ class CommandPlanner:
         return (self.config.output.output_root / rel_path).resolve()
 
     def _build_temp_path(self, source: Path, target_path: Path) -> Path:
-        ensure_dir(self.config.paths.temp_dir)
         token = uuid.uuid4().hex[:10]
-        return (self.config.paths.temp_dir / f".{source.stem}.{token}.tmp{target_path.suffix}").resolve()
+        temp_name = f".{source.stem}.{token}.tmp{target_path.suffix}"
+        # Keep temp file on target filesystem to avoid cross-device moves on commit.
+        try:
+            ensure_dir(target_path.parent)
+            return (target_path.parent / temp_name).resolve()
+        except OSError:
+            ensure_dir(self.config.paths.temp_dir)
+            return (self.config.paths.temp_dir / temp_name).resolve()
 
     def _target_suffix(self) -> str:
         preferred = self.config.remux.preferred_container.lower()

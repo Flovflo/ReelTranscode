@@ -109,6 +109,7 @@ class FFprobeAnalyzer:
                 {
                     "codec_type": stream.codec_type,
                     "codec_name": stream.codec_name,
+                    "codec_tag_string": stream.codec_tag_string,
                     "profile": stream.profile,
                     "level": stream.level,
                     "pix_fmt": stream.pix_fmt,

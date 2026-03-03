@@ -53,6 +53,7 @@ class StreamInfo:
     index: int
     codec_type: str
     codec_name: str | None = None
+    codec_tag_string: str | None = None
     profile: str | None = None
     level: int | None = None
     pix_fmt: str | None = None
@@ -83,6 +84,7 @@ class StreamInfo:
             index=int(raw["index"]),
             codec_type=raw.get("codec_type", "unknown"),
             codec_name=raw.get("codec_name"),
+            codec_tag_string=raw.get("codec_tag_string"),
             profile=raw.get("profile"),
             level=raw.get("level"),
             pix_fmt=raw.get("pix_fmt"),

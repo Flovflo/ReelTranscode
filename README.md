@@ -18,6 +18,14 @@ reeltranscode --config config/reeltranscode.yaml watch
 reeltranscode --config config/reeltranscode.yaml batch --dry-run
 ```
 
+## Quick Setup (Interactive)
+
+Use the assistant script to configure watch folders, output, deletion policy, and optional launchd auto-start:
+
+```bash
+./scripts/setup_watch.sh
+```
+
 ## Commands
 
 - `batch`: process existing files under watch roots

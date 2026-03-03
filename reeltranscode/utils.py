@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,4 +79,10 @@ def inode_identity(path: Path) -> tuple[int, int] | None:
 
 def atomic_replace(src: Path, dst: Path) -> None:
     ensure_parent(dst)
-    os.replace(src, dst)
+    try:
+        os.replace(src, dst)
+    except OSError as exc:
+        if exc.errno != os.EXDEV:
+            raise
+        # Cross-device replace is not atomic; fallback to move to support external volumes.
+        shutil.move(str(src), str(dst))

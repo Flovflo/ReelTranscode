@@ -147,3 +147,30 @@ def test_video_incompatible_picks_case_e():
 
     decision, _ = engine.decide(media)
     assert decision.case_label == CaseLabel.E
+
+
+def test_mp4_hevc_hev1_requires_remux_for_hvc1():
+    cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4"}, "video": {"hevc_tag": "hvc1"}})
+    engine = DecisionEngine(cfg)
+    media = _media(
+        "movie.mp4",
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "codec_tag_string": "hev1",
+                "pix_fmt": "yuv420p10le",
+                "width": 3840,
+                "height": 2160,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            _audio(1, "eac3", channels=6, default=True),
+        ],
+    )
+
+    decision, _ = engine.decide(media)
+    assert decision.case_label == CaseLabel.B
+    assert decision.strategy.value == "remux_only"

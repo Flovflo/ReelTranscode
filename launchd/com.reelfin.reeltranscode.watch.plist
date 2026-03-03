@@ -7,9 +7,11 @@
 
     <key>ProgramArguments</key>
     <array>
-      <string>/opt/homebrew/bin/reeltranscode</string>
+      <string>/opt/homebrew/bin/uv</string>
+      <string>run</string>
+      <string>reeltranscode</string>
       <string>--config</string>
-      <string>/Users/florian/Documents/Projet/ReelTranscode/config/reeltranscode.yaml</string>
+      <string>/Users/flo/Documents/GitHub/ReelTranscode/config/reeltranscode.giant_boy.yaml</string>
       <string>watch</string>
     </array>
 
@@ -23,13 +25,13 @@
     </dict>
 
     <key>WorkingDirectory</key>
-    <string>/Users/florian/Documents/Projet/ReelTranscode</string>
+    <string>/Users/flo/Documents/GitHub/ReelTranscode</string>
 
     <key>StandardOutPath</key>
-    <string>/Users/florian/Documents/Projet/ReelTranscode/reports/launchd.stdout.log</string>
+    <string>/Users/flo/Documents/GitHub/ReelTranscode/reports/giant_boy/launchd.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/florian/Documents/Projet/ReelTranscode/reports/launchd.stderr.log</string>
+    <string>/Users/flo/Documents/GitHub/ReelTranscode/reports/giant_boy/launchd.stderr.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>

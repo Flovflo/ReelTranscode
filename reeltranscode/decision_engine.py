@@ -22,7 +22,16 @@ class DecisionEngine:
         reasons.extend(audio_reasons)
         reasons.extend(subtitle_reasons)
 
-        requires_container_change = not container_ok and self.config.remux.preferred_container == "mp4"
+        requires_hevc_retag = self._requires_hevc_retag(media)
+        if requires_hevc_retag:
+            reasons.append(
+                f"HEVC stream tag is not {self.config.video.hevc_tag}; MP4 retag/remux required for Apple clients"
+            )
+
+        requires_container_change = (
+            (not container_ok and self.config.remux.preferred_container == "mp4")
+            or requires_hevc_retag
+        )
         requires_audio_fix = not audio_ok
 
         # Subtitle fix is relevant only if final target is MP4.
@@ -44,6 +53,17 @@ class DecisionEngine:
             requires_video_transcode=requires_video_transcode,
             reasons=reasons,
         )
+
+    def _requires_hevc_retag(self, media: MediaInfo) -> bool:
+        target_is_mp4 = self.config.remux.preferred_container == "mp4"
+        video = media.primary_video
+        if not target_is_mp4 or video is None:
+            return False
+        if (video.codec_name or "").lower() != "hevc":
+            return False
+        current_tag = (video.codec_tag_string or "").lower()
+        desired_tag = self.config.video.hevc_tag.lower()
+        return current_tag != desired_tag
 
     def decide(self, media: MediaInfo) -> tuple[Decision, CompatibilityDetails]:
         comp = self.evaluate_compatibility(media)
@@ -138,7 +158,7 @@ class DecisionEngine:
                 Decision(
                     strategy=Strategy.REMUX_ONLY,
                     case_label=CaseLabel.B,
-                    reasons=["Container conversion required; all streams compatible"],
+                    reasons=reasons or ["Container conversion required; all streams compatible"],
                     expected_container=expected_container,
                     expected_direct_play_safe=True,
                 ),
