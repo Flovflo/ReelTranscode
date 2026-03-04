@@ -160,12 +160,16 @@ class CommandPlanner:
         if decision.force_sdr:
             args.extend(["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"])
         else:
-            if source.color_primaries:
-                args.extend(["-color_primaries", source.color_primaries])
-            if source.color_transfer:
-                args.extend(["-color_trc", source.color_transfer])
-            if source.color_space:
-                args.extend(["-colorspace", source.color_space])
+            # For Apple HDR playback, always keep explicit PQ + BT.2020 signaling.
+            if compatibility.hdr10_present or compatibility.dv_present:
+                args.extend(["-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc"])
+            else:
+                if source.color_primaries:
+                    args.extend(["-color_primaries", source.color_primaries])
+                if source.color_transfer:
+                    args.extend(["-color_trc", source.color_transfer])
+                if source.color_space:
+                    args.extend(["-colorspace", source.color_space])
 
         return args
 
@@ -174,6 +178,16 @@ class CommandPlanner:
             return []
 
         args: list[str] = ["-c:a", "copy"]
+        has_aac_stereo = False
+        fallback_source_audio_index = 0
+        for source_audio_index, stream in enumerate(media.audio_streams):
+            if stream.disposition.default:
+                fallback_source_audio_index = source_audio_index
+            codec = (stream.codec_name or "").lower()
+            channels = stream.channels or 2
+            if codec == "aac" and channels <= 2:
+                has_aac_stereo = True
+
         for out_audio_index, stream in enumerate(media.audio_streams):
             codec = (stream.codec_name or "").lower()
             if decision.strategy in {Strategy.AUDIO_ONLY, Strategy.FULL_PIPELINE} and codec not in SUPPORTED_AUDIO:
@@ -193,6 +207,30 @@ class CommandPlanner:
                 args.extend([f"-disposition:a:{out_audio_index}", "default"])
             else:
                 args.extend([f"-disposition:a:{out_audio_index}", "0"])
+
+        target_is_mp4 = self._target_suffix() == ".mp4"
+        if (
+            target_is_mp4
+            and self.config.audio.ensure_aac_fallback_stereo_when_missing
+            and not has_aac_stereo
+            and media.audio_streams
+        ):
+            fallback_out_audio_index = len(media.audio_streams)
+            args.extend(["-map", f"0:a:{fallback_source_audio_index}"])
+            args.extend(
+                [
+                    f"-c:a:{fallback_out_audio_index}",
+                    "aac",
+                    f"-ac:a:{fallback_out_audio_index}",
+                    "2",
+                    f"-b:a:{fallback_out_audio_index}",
+                    "192k",
+                    f"-metadata:s:a:{fallback_out_audio_index}",
+                    "title=AAC Stereo Fallback",
+                    f"-disposition:a:{fallback_out_audio_index}",
+                    "0",
+                ]
+            )
         return args
 
     def _subtitle_args(self, media: MediaInfo, decision: Decision) -> tuple[list[str], list[SubtitleExport], list[str]]:

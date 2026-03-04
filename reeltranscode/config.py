@@ -36,6 +36,7 @@ class AudioPolicy:
     max_channels: int = 8
     preferred_languages: list[str] = field(default_factory=lambda: ["eng", "fra", "jpn"])
     keep_original_compatible_tracks: bool = True
+    ensure_aac_fallback_stereo_when_missing: bool = True
 
 
 @dataclass(slots=True)
@@ -61,7 +62,7 @@ class VideoPolicy:
     fallback_codec: str = "h264"
     force_cfr: bool = False
     keyframe_interval_seconds: int = 2
-    hevc_tag: str = "hev1"
+    hevc_tag: str = "hvc1"
     max_4k_fps: int = 60
 
 
@@ -170,6 +171,9 @@ class AppConfig:
             max_channels=int(audio_raw.get("max_channels", 8)),
             preferred_languages=list(audio_raw.get("preferred_languages", ["eng", "fra", "jpn"])),
             keep_original_compatible_tracks=bool(audio_raw.get("keep_original_compatible_tracks", True)),
+            ensure_aac_fallback_stereo_when_missing=bool(
+                audio_raw.get("ensure_aac_fallback_stereo_when_missing", True)
+            ),
         )
 
         sub_raw = raw.get("subtitles", {})
@@ -195,7 +199,7 @@ class AppConfig:
             fallback_codec=str(video_raw.get("fallback_codec", "h264")),
             force_cfr=bool(video_raw.get("force_cfr", False)),
             keyframe_interval_seconds=int(video_raw.get("keyframe_interval_seconds", 2)),
-            hevc_tag=str(video_raw.get("hevc_tag", "hev1")),
+            hevc_tag=str(video_raw.get("hevc_tag", "hvc1")),
             max_4k_fps=int(video_raw.get("max_4k_fps", 60)),
         )
 
@@ -301,7 +305,7 @@ class AppConfig:
         if self.video.keyframe_interval_seconds < 1:
             _error("video.keyframe_interval_seconds", "must be >= 1")
         if self.video.hevc_tag.lower() not in {"hev1", "hvc1"}:
-            _error("video.hevc_tag", "must be one of ['hev1', 'hvc1']")
+            _error("video.hevc_tag", "must be one of ['hvc1', 'hev1']")
 
         if self.validation.verify_duration_tolerance_seconds < 0:
             _error("validation.verify_duration_tolerance_seconds", "must be >= 0")

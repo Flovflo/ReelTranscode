@@ -12,8 +12,9 @@ ReelTranscode est une pipeline orientee Apple (Plex/Infuse/TV app) qui optimise 
 - Priorite qualite Apple video:
   - copie/remux avant transcode
   - HEVC Main10 quand pipeline HDR/DV necessite un transcode
-  - tag MP4 HEVC par defaut: `hev1`
+  - tag MP4 HEVC par defaut: `hvc1`
   - `movflags +write_colr+faststart` pour meilleure preservation metadata couleur.
+  - fallback audio AAC stereo ajoute automatiquement si absent en sortie MP4.
 
 ## Structure
 
@@ -90,7 +91,7 @@ Sorties:
 - ReelTranscode tente d'eviter le transcode video des qu'un remux/copy suffit.
 - Les chemins Dolby Vision fragiles restent traites de facon conservative selon la policy.
 - Si un transcode video est necessaire sur media HDR/DV, la pipeline force HEVC Main10 (`p010le`) et conserve les tags couleur source quand possible.
-- Le tag HEVC MP4 cible est configurable via `video.hevc_tag` (`hev1` par defaut, `hvc1` optionnel).
+- Le tag HEVC MP4 cible est configurable via `video.hevc_tag` (`hvc1` par defaut, `hev1` optionnel).
 
 ## Troubleshooting rapide
 

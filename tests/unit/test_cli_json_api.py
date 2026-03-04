@@ -18,7 +18,8 @@ def test_config_export_json_contract(capsys):
     assert payload["api_version"] == 1
     assert payload["config"]["remux"]["preferred_container"] == "mp4"
     assert isinstance(payload["config"]["watch"]["allowed_extensions"], list)
-    assert payload["config"]["video"]["hevc_tag"] == "hev1"
+    assert payload["config"]["video"]["hevc_tag"] == "hvc1"
+    assert payload["config"]["audio"]["ensure_aac_fallback_stereo_when_missing"] is True
 
 
 def test_config_validate_reports_structured_errors(tmp_path: Path, capsys):
@@ -78,7 +79,7 @@ video:
     payload = json.loads(out)
 
     assert payload["valid"] is False
-    assert {"field": "video.hevc_tag", "message": "must be one of ['hev1', 'hvc1']"} in payload["errors"]
+    assert {"field": "video.hevc_tag", "message": "must be one of ['hvc1', 'hev1']"} in payload["errors"]
 
 
 def test_status_json_contract(tmp_path: Path, capsys):

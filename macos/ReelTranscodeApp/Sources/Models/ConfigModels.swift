@@ -77,6 +77,7 @@ struct ConfigDocument {
           max_channels: 8
           preferred_languages: [fra, eng]
           keep_original_compatible_tracks: true
+          ensure_aac_fallback_stereo_when_missing: true
         
         subtitles:
           mode: convert_or_externalize
@@ -96,7 +97,7 @@ struct ConfigDocument {
           fallback_codec: h264
           force_cfr: false
           keyframe_interval_seconds: 2
-          hevc_tag: hev1
+          hevc_tag: hvc1
           max_4k_fps: 60
         
         output:
