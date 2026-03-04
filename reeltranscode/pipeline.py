@@ -61,6 +61,17 @@ class PipelineProcessor:
         expected_safe_override: bool | None = None
 
         try:
+            # Record a running job row before probing so probe failures are visible in status/jobs.
+            self.state_store.mark_job_started(
+                job_id,
+                path,
+                None,
+                "analyze",
+                "ANALYZE",
+                "",
+                "",
+            )
+
             media, probe_command = self.analyzer.analyze(path)
             stream_fp = self.analyzer.stream_fingerprint(media)
             metadata_fp = self.analyzer.metadata_fingerprint(media)

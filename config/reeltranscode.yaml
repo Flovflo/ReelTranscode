@@ -44,7 +44,7 @@ video:
   fallback_codec: h264
   force_cfr: false
   keyframe_interval_seconds: 2
-  hevc_tag: hvc1
+  hevc_tag: hev1
   max_4k_fps: 60
 
 output:

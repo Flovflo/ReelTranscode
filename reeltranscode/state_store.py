@@ -4,6 +4,7 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from reeltranscode.models import JobStatus
 from reeltranscode.utils import ensure_parent, now_utc_iso
@@ -179,6 +180,66 @@ class StateStore:
                     job_id,
                 ),
             )
+
+    def status_snapshot(self, limit: int = 50) -> dict[str, Any]:
+        capped_limit = max(1, min(int(limit), 500))
+        summary = {
+            "pending": 0,
+            "running": 0,
+            "success": 0,
+            "failed": 0,
+            "skipped": 0,
+            "total": 0,
+        }
+
+        rows = self._conn.execute(
+            "SELECT status, COUNT(*) AS c FROM jobs GROUP BY status"
+        ).fetchall()
+        for row in rows:
+            status = str(row["status"])
+            count = int(row["c"])
+            if status in summary:
+                summary[status] = count
+            summary["total"] += count
+
+        latest_rows = self._conn.execute(
+            """
+            SELECT
+                job_id,
+                status,
+                case_label,
+                strategy,
+                source_path,
+                target_path,
+                started_at,
+                finished_at,
+                error_class,
+                error_message
+            FROM jobs
+            ORDER BY COALESCE(finished_at, started_at) DESC
+            LIMIT ?
+            """,
+            (capped_limit,),
+        ).fetchall()
+        latest_jobs = [
+            {
+                "job_id": row["job_id"],
+                "status": row["status"],
+                "case_label": row["case_label"],
+                "strategy": row["strategy"],
+                "source_path": row["source_path"],
+                "target_path": row["target_path"],
+                "started_at": row["started_at"],
+                "finished_at": row["finished_at"],
+                "error_class": row["error_class"],
+                "error_message": row["error_message"],
+            }
+            for row in latest_rows
+        ]
+        return {
+            "summary": summary,
+            "latest_jobs": latest_jobs,
+        }
 
     def upsert_file_state(
         self,

@@ -69,8 +69,11 @@ class CommandPlanner:
         cmd.extend(self._audio_args(media, decision))
 
         cmd.extend(["-map_metadata", "0"])
-        if target_path.suffix.lower() == ".mp4" and self.config.remux.faststart:
-            cmd.extend(["-movflags", "+faststart"])
+        if target_path.suffix.lower() == ".mp4":
+            movflags = "+write_colr"
+            if self.config.remux.faststart:
+                movflags = f"{movflags}+faststart"
+            cmd.extend(["-movflags", movflags])
 
         cmd.append(str(temp_path))
         steps.append(CommandStep(name="main_ffmpeg", command=cmd, expected_outputs=[temp_path]))
@@ -137,8 +140,10 @@ class CommandPlanner:
             if decision.force_sdr:
                 args.extend(["-profile:v", "main", "-pix_fmt", "yuv420p"])
             else:
+                # Keep HDR/Dolby Vision transcodes in Main10 to avoid narrowing dynamic range.
+                preserve_hdr_pipeline = compatibility.hdr10_present or compatibility.dv_present
                 ten_bit_source = (source.pix_fmt or "") in {"yuv420p10le", "p010le"}
-                if ten_bit_source:
+                if ten_bit_source or preserve_hdr_pipeline:
                     args.extend(["-profile:v", "main10", "-pix_fmt", "p010le"])
                 else:
                     args.extend(["-profile:v", "main", "-pix_fmt", "yuv420p"])

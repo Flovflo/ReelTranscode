@@ -64,7 +64,7 @@ def test_plan_for_sample1_keeps_video_copy():
     assert "-c:v" in cmd
     assert cmd[cmd.index("-c:v") + 1] == "copy"
     assert "-tag:v" in cmd
-    assert cmd[cmd.index("-tag:v") + 1] == "hvc1"
+    assert cmd[cmd.index("-tag:v") + 1] == "hev1"
     assert str(plan.target_path).endswith(".mp4")
 
 
@@ -103,3 +103,45 @@ def test_video_transcode_plan_uses_videotoolbox():
 
     cmd = plan.steps[0].command
     assert "hevc_videotoolbox" in cmd
+
+
+def test_hdr_transcode_forces_hevc_main10_pipeline():
+    cfg = AppConfig.from_dict({"video": {"preferred_codec": "hevc"}})
+    media = _media(
+        "/Volumes/Media/Movies/hdr_av1_source.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "av1",
+                "pix_fmt": "yuv420p",
+                "width": 3840,
+                "height": 2160,
+                "avg_frame_rate": "24/1",
+                "color_primaries": "bt2020",
+                "color_transfer": "smpte2084",
+                "color_space": "bt2020nc",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "eng"},
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    engine = DecisionEngine(cfg)
+    decision, comp = engine.decide(media)
+    planner = CommandPlanner(cfg)
+    plan = planner.build(media, decision, comp, Path("/Volumes/Media/Movies"))
+
+    cmd = plan.steps[0].command
+    assert cmd[cmd.index("-tag:v") + 1] == "hev1"
+    assert cmd[cmd.index("-profile:v") + 1] == "main10"
+    assert cmd[cmd.index("-pix_fmt") + 1] == "p010le"

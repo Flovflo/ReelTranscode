@@ -35,6 +35,9 @@ class _MediaEventHandler(FileSystemEventHandler):
     def on_moved(self, event: FileSystemEvent) -> None:
         self._enqueue(event, getattr(event, "dest_path", None))
 
+    def on_modified(self, event: FileSystemEvent) -> None:
+        self._enqueue(event)
+
     def _enqueue(self, event: FileSystemEvent, explicit_path: str | None = None) -> None:
         if event.is_directory:
             return
@@ -71,6 +74,9 @@ class LibraryWatcher:
             observer.start()
             observers.append(observer)
             LOGGER.info("Watching folder: %s", root)
+            queued = self._seed_existing_files(root, work_queue)
+            if queued > 0:
+                LOGGER.info("Queued %d existing media files from: %s", queued, root)
 
         workers = [
             threading.Thread(target=self._worker, args=(work_queue, process_fn), daemon=True)
@@ -116,3 +122,18 @@ class LibraryWatcher:
                 LOGGER.exception("Watch worker failed for %s", item.path)
             finally:
                 work_queue.task_done()
+
+    def _seed_existing_files(self, root: Path, work_queue: queue.Queue[QueuedPath]) -> int:
+        if not root.exists():
+            return 0
+
+        queued = 0
+        iterator = root.rglob("*") if self.cfg.watch.recursive else root.glob("*")
+        for path in iterator:
+            if not path.is_file():
+                continue
+            if not is_media_file(path, self.cfg.watch.allowed_extensions):
+                continue
+            work_queue.put(QueuedPath(path=path, source_root=root))
+            queued += 1
+        return queued

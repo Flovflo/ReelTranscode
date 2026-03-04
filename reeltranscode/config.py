@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+import os
 from pathlib import Path
 from typing import Any
 
@@ -60,7 +61,7 @@ class VideoPolicy:
     fallback_codec: str = "h264"
     force_cfr: bool = False
     keyframe_interval_seconds: int = 2
-    hevc_tag: str = "hvc1"
+    hevc_tag: str = "hev1"
     max_4k_fps: int = 60
 
 
@@ -194,7 +195,7 @@ class AppConfig:
             fallback_codec=str(video_raw.get("fallback_codec", "h264")),
             force_cfr=bool(video_raw.get("force_cfr", False)),
             keyframe_interval_seconds=int(video_raw.get("keyframe_interval_seconds", 2)),
-            hevc_tag=str(video_raw.get("hevc_tag", "hvc1")),
+            hevc_tag=str(video_raw.get("hevc_tag", "hev1")),
             max_4k_fps=int(video_raw.get("max_4k_fps", 60)),
         )
 
@@ -263,3 +264,88 @@ class AppConfig:
             logging=logging,
             dry_run=bool(raw.get("dry_run", False)),
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize config with normalized JSON/YAML-friendly values."""
+        return _serialize_value(asdict(self))
+
+    def validate(self) -> list[dict[str, str]]:
+        errors: list[dict[str, str]] = []
+
+        def _error(field: str, message: str) -> None:
+            errors.append({"field": field, "message": message})
+
+        if self.concurrency.max_workers < 1:
+            _error("concurrency.max_workers", "must be >= 1")
+        if self.retry.max_attempts < 1:
+            _error("retry.max_attempts", "must be >= 1")
+        if self.watch.stable_checks < 1:
+            _error("watch.stable_checks", "must be >= 1")
+        if self.watch.poll_interval_seconds < 1:
+            _error("watch.poll_interval_seconds", "must be >= 1")
+        if self.watch.stable_wait_seconds < 1:
+            _error("watch.stable_wait_seconds", "must be >= 1")
+
+        allowed_modes = {"keep_original", "archive_original", "replace_original"}
+        if self.output.mode not in allowed_modes:
+            _error("output.mode", f"must be one of {sorted(allowed_modes)}")
+
+        allowed_containers = {"mp4", "mov", "m4v", "mkv"}
+        if self.remux.preferred_container.lower() not in allowed_containers:
+            _error("remux.preferred_container", f"must be one of {sorted(allowed_containers)}")
+
+        if self.audio.max_channels < 1:
+            _error("audio.max_channels", "must be >= 1")
+        if self.video.max_4k_fps < 1:
+            _error("video.max_4k_fps", "must be >= 1")
+        if self.video.keyframe_interval_seconds < 1:
+            _error("video.keyframe_interval_seconds", "must be >= 1")
+        if self.video.hevc_tag.lower() not in {"hev1", "hvc1"}:
+            _error("video.hevc_tag", "must be one of ['hev1', 'hvc1']")
+
+        if self.validation.verify_duration_tolerance_seconds < 0:
+            _error("validation.verify_duration_tolerance_seconds", "must be >= 0")
+        if self.validation.verify_stream_count_delta_max < 0:
+            _error("validation.verify_stream_count_delta_max", "must be >= 0")
+
+        if not self.tooling.ffmpeg_bin.strip():
+            _error("tooling.ffmpeg_bin", "must not be empty")
+        if not self.tooling.ffprobe_bin.strip():
+            _error("tooling.ffprobe_bin", "must not be empty")
+
+        ffmpeg_path = Path(self.tooling.ffmpeg_bin).expanduser()
+        if ffmpeg_path.is_absolute():
+            if not ffmpeg_path.exists():
+                _error("tooling.ffmpeg_bin", f"binary not found: {ffmpeg_path}")
+            elif not os.access(ffmpeg_path, os.X_OK):
+                _error("tooling.ffmpeg_bin", f"not executable: {ffmpeg_path}")
+
+        ffprobe_path = Path(self.tooling.ffprobe_bin).expanduser()
+        if ffprobe_path.is_absolute():
+            if not ffprobe_path.exists():
+                _error("tooling.ffprobe_bin", f"binary not found: {ffprobe_path}")
+            elif not os.access(ffprobe_path, os.X_OK):
+                _error("tooling.ffprobe_bin", f"not executable: {ffprobe_path}")
+
+        if not self.watch.allowed_extensions:
+            _error("watch.allowed_extensions", "must contain at least one extension")
+        else:
+            for ext in sorted(self.watch.allowed_extensions):
+                if not ext.startswith("."):
+                    _error("watch.allowed_extensions", f"extension must start with '.': {ext}")
+
+        return errors
+
+
+def _serialize_value(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, set):
+        return sorted(_serialize_value(v) for v in value)
+    if isinstance(value, list):
+        return [_serialize_value(v) for v in value]
+    if isinstance(value, tuple):
+        return [_serialize_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _serialize_value(v) for k, v in value.items()}
+    return value

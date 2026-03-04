@@ -15,6 +15,7 @@ build/
 .mypy_cache/
 .coverage
 htmlcov/
+*.profraw
 
 # Runtime artifacts
 reports/*.json
@@ -25,3 +26,6 @@ tmp/
 
 # macOS
 .DS_Store
+
+# Local packaging artifacts
+ReelTranscodeCore.spec
