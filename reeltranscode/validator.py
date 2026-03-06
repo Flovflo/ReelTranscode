@@ -67,10 +67,13 @@ class OutputValidator:
             reasons.extend(subtitle_reasons)
             notes.extend(subtitle_notes)
 
-        if output.duration is not None and source.duration is not None:
-            delta = abs(output.duration - source.duration)
+        expected_output_duration = _expected_output_duration(source)
+        if output.duration is not None and expected_output_duration is not None:
+            delta = abs(output.duration - expected_output_duration)
             if delta > self.config.validation.verify_duration_tolerance_seconds:
                 reasons.append(f"Duration delta too high: {delta:.2f}s")
+
+        reasons.extend(self._validate_video_timing(source, output))
 
         externalized_subtitles = len(plan.external_subtitle_outputs) if plan else 0
         expected_output_stream_count = max(0, len(source.streams) - externalized_subtitles)
@@ -103,14 +106,17 @@ class OutputValidator:
                 )
 
         for index, (source_track, output_track) in enumerate(zip(source_tracks, output_tracks, strict=True)):
+            source_hi = source_track.hearing_impaired or source_track.captions or _title_implies_hi(source_track.title)
+            output_hi = output_track.hearing_impaired or output_track.captions or _title_implies_hi(output_track.title)
+
             if source_track.language != output_track.language:
                 reasons.append(
                     f"Subtitle track {index} language changed: "
                     f"source={source_track.language or 'und'}, output={output_track.language or 'und'}"
                 )
 
-            source_title = _normalize_title(source_track.title)
-            output_title = _normalize_title(output_track.title)
+            source_title = _normalize_subtitle_title(source_track.title, source_hi)
+            output_title = _normalize_subtitle_title(output_track.title, output_hi)
             if source_title != output_title:
                 reasons.append(
                     f"Subtitle track {index} title changed: "
@@ -128,8 +134,6 @@ class OutputValidator:
                     f"source={source_track.forced}, output={output_track.forced}"
                 )
 
-            source_hi = source_track.hearing_impaired or source_track.captions or _title_implies_hi(source_track.title)
-            output_hi = output_track.hearing_impaired or output_track.captions or _title_implies_hi(output_track.title)
             if source_hi != output_hi:
                 reasons.append(
                     f"Subtitle track {index} hearing-impaired/captions marker changed: "
@@ -139,6 +143,56 @@ class OutputValidator:
         if reasons:
             return reasons, []
         return [], [f"Subtitle validation passed: {len(output_tracks)} mov_text tracks preserved"]
+
+    def _validate_video_timing(self, source: MediaInfo, output: MediaInfo) -> list[str]:
+        source_video = source.primary_video
+        output_video = output.primary_video
+        if source_video is None or output_video is None:
+            return []
+
+        reasons: list[str] = []
+        tolerance = self.config.validation.verify_duration_tolerance_seconds
+
+        source_fps = _frame_rate_to_float(source_video.avg_frame_rate or source_video.r_frame_rate)
+        output_fps = _frame_rate_to_float(output_video.avg_frame_rate or output_video.r_frame_rate)
+        if source_fps is not None and output_fps is not None:
+            fps_delta = abs(source_fps - output_fps)
+            allowed_delta = max(0.05, source_fps * 0.005)
+            if fps_delta > allowed_delta:
+                reasons.append(
+                    "Video frame rate changed unexpectedly: "
+                    f"source={source_fps:.3f}fps, output={output_fps:.3f}fps"
+                )
+
+        source_video_duration = source_video.duration or source.duration
+        output_video_duration = output_video.duration or output.duration
+        if source_video_duration is not None and output_video_duration is not None:
+            delta = abs(source_video_duration - output_video_duration)
+            if delta > tolerance:
+                reasons.append(
+                    "Video duration changed unexpectedly: "
+                    f"source={source_video_duration:.2f}s, output={output_video_duration:.2f}s"
+                )
+
+        if output.duration is not None and output_video_duration is not None:
+            delta = abs(output.duration - output_video_duration)
+            if delta > tolerance:
+                reasons.append(
+                    "Output video duration does not match container duration: "
+                    f"video={output_video_duration:.2f}s, container={output.duration:.2f}s"
+                )
+
+        for audio_index, audio_stream in enumerate(output.audio_streams):
+            if audio_stream.duration is None or output_video_duration is None:
+                continue
+            delta = abs(audio_stream.duration - output_video_duration)
+            if delta > tolerance:
+                reasons.append(
+                    "Output audio/video duration mismatch: "
+                    f"track={audio_index}, video={output_video_duration:.2f}s, audio={audio_stream.duration:.2f}s"
+                )
+
+        return reasons
 
 
 def _dv_description(info) -> str:
@@ -154,8 +208,43 @@ def _normalize_title(value: str | None) -> str | None:
     return normalized or None
 
 
+def _normalize_subtitle_title(value: str | None, hi_marker: bool) -> str | None:
+    normalized = _normalize_title(value)
+    if normalized is None or not hi_marker:
+        return normalized
+    normalized = re.sub(r"\b(?:sdh|hearing impaired|closed captions|cc)\b", "", normalized)
+    normalized = re.sub(r"[\(\)\[\]\-_:]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized or None
+
+
 def _title_implies_hi(value: str | None) -> bool:
     if not value:
         return False
     text = value.casefold()
     return any(token in text for token in ["sdh", "hearing impaired", "closed captions", "cc"])
+
+
+def _frame_rate_to_float(value: str | None) -> float | None:
+    if not value or value in {"0/0", "N/A"}:
+        return None
+    if "/" in value:
+        left, right = value.split("/", 1)
+        try:
+            denominator = float(right)
+            if denominator == 0:
+                return None
+            return float(left) / denominator
+        except ValueError:
+            return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _expected_output_duration(source: MediaInfo) -> float | None:
+    source_video = source.primary_video
+    if source_video and source_video.duration is not None:
+        return source_video.duration
+    return source.duration

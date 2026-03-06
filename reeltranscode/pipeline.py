@@ -45,6 +45,7 @@ class PipelineProcessor:
         target_path: Path | None = None
         temp_path: Path | None = None
         external_subtitle_outputs: list[Path] = []
+        cleanup_paths: list[Path] = []
 
         stat = path.stat()
         device = stat.st_dev
@@ -160,6 +161,7 @@ class PipelineProcessor:
                 target_path = plan.target_path
                 temp_path = plan.temp_path
                 external_subtitle_outputs = list(plan.external_subtitle_outputs)
+                cleanup_paths = list(plan.cleanup_paths)
 
                 if (
                     target_path
@@ -263,6 +265,12 @@ class PipelineProcessor:
                         atomic_replace(plan.temp_path, plan.target_path)
                         temp_path = None
                         self._post_success_source_handling(path, plan.target_path, source_root)
+                    for cleanup_path in cleanup_paths:
+                        if cleanup_path.exists():
+                            try:
+                                cleanup_path.unlink()
+                            except OSError:
+                                LOGGER.warning("Unable to remove intermediate output after success: %s", cleanup_path)
                     status = JobStatus.SUCCESS
 
         except (ProbeError, CommandFailedError, RuntimeError, OSError) as exc:
@@ -281,6 +289,12 @@ class PipelineProcessor:
                         subtitle_path.unlink()
                     except OSError:
                         LOGGER.warning("Unable to remove subtitle sidecar after failure: %s", subtitle_path)
+            for cleanup_path in cleanup_paths:
+                if cleanup_path.exists():
+                    try:
+                        cleanup_path.unlink()
+                    except OSError:
+                        LOGGER.warning("Unable to remove intermediate output after failure: %s", cleanup_path)
         return self._finalize_report(
             job_id=job_id,
             path=path,

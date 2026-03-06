@@ -6,14 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from reeltranscode.config import AppConfig
-from reeltranscode.models import (
-    CommandStep,
-    CompatibilityDetails,
-    Decision,
-    ExecutionPlan,
-    MediaInfo,
-    Strategy,
-)
+from reeltranscode.models import CommandStep, CompatibilityDetails, Decision, ExecutionPlan, MediaInfo, Strategy
 from reeltranscode.tooling import ToolchainResolver
 from reeltranscode.utils import ensure_dir
 
@@ -48,6 +41,7 @@ class CommandPlanner:
         notes: list[str] = []
         steps: list[CommandStep] = []
         subtitle_sidecars: list[Path] = []
+        cleanup_paths: list[Path] = []
 
         if decision.strategy == Strategy.NO_OP:
             return ExecutionPlan(
@@ -121,6 +115,7 @@ class CommandPlanner:
             case_label=decision.case_label,
             steps=steps,
             external_subtitle_outputs=subtitle_sidecars,
+            cleanup_paths=cleanup_paths,
             notes=notes,
         )
 
@@ -131,7 +126,7 @@ class CommandPlanner:
         source_root: Path | None,
     ) -> ExecutionPlan:
         caps = self.tooling.resolve_dolby_vision_mux_capabilities()
-        if not caps.available or not caps.dovi_muxer_bin:
+        if not caps.available or not caps.mp4muxer_bin:
             missing = ", ".join(sorted(caps.missing_tools)) or "unknown"
             raise RuntimeError(f"DoViMuxer toolchain unavailable: {missing}")
 
@@ -141,13 +136,20 @@ class CommandPlanner:
         cmd = [caps.dovi_muxer_bin, str(temp_path), "-i", str(media.path), "-ffmpeg", caps.ffmpeg_bin]
         notes = ["DoViMuxer Dolby Vision safe remux path selected"]
         subtitle_sidecars: list[Path] = []
+        mp4muxer_wrapper = self._build_mp4muxer_wrapper(media, target_path, caps.mp4muxer_bin)
+        cleanup_paths = [mp4muxer_wrapper]
         steps: list[CommandStep] = []
         if caps.mp4box_bin:
-            cmd.extend(["-mp4box", caps.mp4box_bin])
+            mp4box_wrapper = self._build_mp4box_wrapper(media, target_path, caps.mp4box_bin)
+            if mp4box_wrapper is not None:
+                cmd.extend(["-mp4box", str(mp4box_wrapper)])
+                cleanup_paths.append(mp4box_wrapper)
+                notes.append("Trimmed overlong audio track(s) to source video duration on the DV-safe remux path")
+            else:
+                cmd.extend(["-mp4box", caps.mp4box_bin])
         if caps.mediainfo_bin:
             cmd.extend(["-mediainfo", caps.mediainfo_bin])
-        if caps.mp4muxer_bin:
-            cmd.extend(["-mp4muxer", caps.mp4muxer_bin])
+        cmd.extend(["-mp4muxer", str(mp4muxer_wrapper)])
         if not self.config.remux.keep_chapters:
             cmd.append("--nochap")
 
@@ -166,7 +168,8 @@ class CommandPlanner:
         for source_sub_index, stream in enumerate(media.subtitle_streams):
             lang = (stream.language or "und").lower()
             cmd.extend(["-map", f"0:s:{source_sub_index}"])
-            if meta := self._dovi_meta_arg("s", output_sub_index, lang, stream.title):
+            subtitle_title = self._subtitle_title_for_dovi(stream.title, stream.disposition.hearing_impaired, stream.disposition.captions)
+            if meta := self._dovi_meta_arg("s", output_sub_index, lang, subtitle_title):
                 cmd.extend(["-meta", meta])
             if stream.disposition.default:
                 cmd.extend(["-default", f"s:{output_sub_index}"])
@@ -175,7 +178,7 @@ class CommandPlanner:
             output_sub_index += 1
 
         cmd.append("-y")
-        steps.insert(0, CommandStep(name="dovi_muxer", command=cmd, expected_outputs=[temp_path], cwd=step_cwd))
+        steps.append(CommandStep(name="dovi_muxer", command=cmd, expected_outputs=[temp_path], cwd=step_cwd))
         return ExecutionPlan(
             source_path=media.path,
             target_path=target_path,
@@ -184,6 +187,7 @@ class CommandPlanner:
             case_label=decision.case_label,
             steps=steps,
             external_subtitle_outputs=subtitle_sidecars,
+            cleanup_paths=cleanup_paths,
             notes=notes,
         )
 
@@ -248,11 +252,18 @@ class CommandPlanner:
 
         return args
 
-    def _audio_args(self, media: MediaInfo, decision: Decision) -> list[str]:
+    def _audio_args(
+        self,
+        media: MediaInfo,
+        decision: Decision,
+        *,
+        input_index: int = 0,
+        include_default_maps: bool = False,
+    ) -> list[str]:
         if not media.audio_streams:
             return []
 
-        args: list[str] = ["-c:a", "copy"]
+        args: list[str] = []
         has_aac_stereo = False
         fallback_source_audio_index = 0
         for source_audio_index, stream in enumerate(media.audio_streams):
@@ -262,6 +273,10 @@ class CommandPlanner:
             channels = stream.channels or 2
             if codec == "aac" and channels <= 2:
                 has_aac_stereo = True
+            if include_default_maps:
+                args.extend(["-map", f"{input_index}:a:{source_audio_index}"])
+
+        args.extend(["-c:a", "copy"])
 
         for out_audio_index, stream in enumerate(media.audio_streams):
             codec = (stream.codec_name or "").lower()
@@ -291,7 +306,7 @@ class CommandPlanner:
             and media.audio_streams
         ):
             fallback_out_audio_index = len(media.audio_streams)
-            args.extend(["-map", f"0:a:{fallback_source_audio_index}"])
+            args.extend(["-map", f"{input_index}:a:{fallback_source_audio_index}"])
             args.extend(
                 [
                     f"-c:a:{fallback_out_audio_index}",
@@ -313,6 +328,9 @@ class CommandPlanner:
         media: MediaInfo,
         decision: Decision,
         target_path: Path,
+        *,
+        input_index: int = 0,
+        include_maps: bool = False,
     ) -> tuple[list[str], list[SubtitleExport], list[str]]:
         if not media.subtitle_streams:
             return ["-c:s", "copy"], [], []
@@ -334,6 +352,8 @@ class CommandPlanner:
                     f"stream {source_sub_index} ({stream.codec_name or 'unknown'})"
                 )
 
+            if include_maps:
+                args.extend(["-map", f"{input_index}:s:{source_sub_index}"])
             args.extend([f"-c:s:{output_sub_index}", "mov_text"])
             args.extend([f"-metadata:s:s:{output_sub_index}", f"language={lang}"])
             if stream.title:
@@ -384,6 +404,86 @@ class CommandPlanner:
             ensure_dir(self.config.paths.temp_dir)
             return (self.config.paths.temp_dir / temp_name).resolve()
 
+    def _build_intermediate_path(self, source: Path, target_path: Path, label: str, suffix: str) -> Path:
+        token = uuid.uuid4().hex[:10]
+        file_name = f".{source.stem}.{token}.{label}{suffix}"
+        try:
+            ensure_dir(target_path.parent)
+            return (target_path.parent / file_name).resolve()
+        except OSError:
+            ensure_dir(self.config.paths.temp_dir)
+            return (self.config.paths.temp_dir / file_name).resolve()
+
+    def _build_mp4muxer_wrapper(self, media: MediaInfo, target_path: Path, mp4muxer_bin: str) -> Path:
+        wrapper_path = self._build_intermediate_path(media.path, target_path, "mp4muxer-fps-wrapper", ".sh")
+        fps_value = self._source_video_frame_rate(media)
+        script = "\n".join(
+            [
+                "#!/bin/bash",
+                "args=()",
+                "inject_next=0",
+                "injected=0",
+                'for arg in "$@"; do',
+                '  args+=("$arg")',
+                "  if [[ $inject_next -eq 1 && $injected -eq 0 ]]; then",
+                f'    args+=("--input-video-frame-rate" "{fps_value}")',
+                "    inject_next=0",
+                "    injected=1",
+                "    continue",
+                "  fi",
+                '  if [[ "$arg" == "-i" || "$arg" == "--input-file" ]]; then',
+                "    inject_next=1",
+                "  fi",
+                "done",
+                f'exec "{mp4muxer_bin}" "${{args[@]}}"',
+                "",
+            ]
+        )
+        wrapper_path.write_text(script, encoding="utf-8")
+        wrapper_path.chmod(0o755)
+        return wrapper_path
+
+    def _build_mp4box_wrapper(self, media: MediaInfo, target_path: Path, mp4box_bin: str) -> Path | None:
+        trim_specs = self._audio_trim_specs(media)
+        if not trim_specs:
+            return None
+
+        wrapper_path = self._build_intermediate_path(media.path, target_path, "mp4box-audio-trim-wrapper", ".sh")
+        script_lines = [
+            "#!/bin/bash",
+            "args=()",
+            "inject_next_add=0",
+            'for arg in "$@"; do',
+            "  if [[ $inject_next_add -eq 1 ]]; then",
+            '    rewritten="$arg"',
+        ]
+        for output_audio_index, duration in trim_specs.items():
+            script_lines.extend(
+                [
+                    f'    if [[ "$arg" == *_Audio{output_audio_index}.* ]] && [[ "$arg" != *:dur=* ]]; then',
+                    f'      rewritten="${{arg}}:dur={duration:.3f}"',
+                    "    fi",
+                ]
+            )
+        script_lines.extend(
+            [
+                '    args+=("$rewritten")',
+                "    inject_next_add=0",
+                "    continue",
+                "  fi",
+                '  args+=("$arg")',
+                '  if [[ "$arg" == "-add" ]]; then',
+                "    inject_next_add=1",
+                "  fi",
+                "done",
+                f'exec "{mp4box_bin}" "${{args[@]}}"',
+                "",
+            ]
+        )
+        wrapper_path.write_text("\n".join(script_lines), encoding="utf-8")
+        wrapper_path.chmod(0o755)
+        return wrapper_path
+
     def _target_suffix(self) -> str:
         preferred = self.config.remux.preferred_container.lower()
         if preferred == "mp4":
@@ -428,6 +528,42 @@ class CommandPlanner:
             values.extend(["hearing_impaired", "captions"])
         return "+".join(values) if values else "0"
 
+    @staticmethod
+    def _subtitle_title_for_dovi(title: str | None, hearing_impaired: bool, captions: bool) -> str | None:
+        if not (hearing_impaired or captions):
+            return title
+        if title and _subtitle_title_implies_hi(title):
+            return title
+        if title:
+            return f"{title} SDH"
+        return "SDH"
+
+    @staticmethod
+    def _source_video_frame_rate(media: MediaInfo) -> str:
+        video = media.primary_video
+        if video is None:
+            raise RuntimeError("Dolby Vision remux requires a video stream")
+
+        for value in [video.avg_frame_rate, video.r_frame_rate]:
+            if value and value not in {"0/0", "N/A"}:
+                return value
+        raise RuntimeError("Dolby Vision remux requires a known source frame rate")
+
+    def _audio_trim_specs(self, media: MediaInfo) -> dict[int, float]:
+        video = media.primary_video
+        if video is None or video.duration is None:
+            return {}
+
+        trim_specs: dict[int, float] = {}
+        tolerance = self.config.validation.verify_duration_tolerance_seconds
+        for output_audio_index, stream in enumerate(media.audio_streams):
+            if stream.duration is None:
+                continue
+            if stream.duration - video.duration > tolerance:
+                trim_specs[output_audio_index] = video.duration
+        return trim_specs
+
+
 
 def _fps(value: str | None) -> float | None:
     if not value or value in {"0/0", "N/A"}:
@@ -453,3 +589,10 @@ def _video_target_bitrate(source_bit_rate: int | None) -> str:
     estimated = int(source_bit_rate * 0.88)
     estimated = min(max(estimated, 4_000_000), 35_000_000)
     return str(estimated)
+
+
+def _subtitle_title_implies_hi(value: str | None) -> bool:
+    if not value:
+        return False
+    text = value.casefold()
+    return any(token in text for token in ["sdh", "hearing impaired", "closed captions", "cc"])

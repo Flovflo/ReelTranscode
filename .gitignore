@@ -21,6 +21,7 @@ htmlcov/
 reports/*.json
 reports/*.csv
 reports/*.log
+optimized/
 state/
 tmp/
 

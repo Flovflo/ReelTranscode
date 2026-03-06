@@ -236,3 +236,177 @@ def test_validator_validates_mp4_text_subtitles():
 
     assert result.ok is True
     assert any("Subtitle validation passed" in note for note in result.notes)
+
+
+def test_validator_rejects_video_timing_mismatch_even_when_container_duration_matches():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(Path("/tmp/source.mkv"), "matroska,webm", has_dv=True, codec_tag=None)
+    source.streams[0].avg_frame_rate = "24000/1001"
+    source.streams[0].duration = 8405.79
+    source.duration = 8405.79
+
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="hvc1",
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General", "CodecID_Compatible": "isom/dby1/iso2/mp41"},
+                    {
+                        "@type": "Video",
+                        "HDR_Format": "Dolby Vision / SMPTE ST 2086",
+                        "HDR_Format_Profile": "dvhe.08",
+                        "HDR_Format_Compatibility": "HDR10 / HDR10",
+                        "CodecID": "hvc1",
+                    },
+                ]
+            }
+        },
+    )
+    output.streams[0].avg_frame_rate = "30/1"
+    output.streams[0].duration = 6717.87
+    output.streams[1].duration = 8405.76
+    output.duration = 8405.79
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is False
+    assert any("Video frame rate changed unexpectedly" in reason for reason in result.reasons)
+    assert any("Video duration changed unexpectedly" in reason for reason in result.reasons)
+    assert any("Output audio/video duration mismatch" in reason for reason in result.reasons)
+
+
+def test_validator_uses_source_stream_duration_tags_as_expected_timeline():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(Path("/tmp/source.mkv"), "matroska,webm", has_dv=True, codec_tag=None)
+    source.duration = 110.0
+    source.streams[0] = StreamInfo.from_probe(
+        {
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "hevc",
+            "profile": "Main 10",
+            "codec_tag_string": None,
+            "pix_fmt": "yuv420p10le",
+            "width": 3840,
+            "height": 1606,
+            "avg_frame_rate": "24/1",
+            "color_primaries": "bt2020",
+            "color_transfer": "smpte2084",
+            "color_space": "bt2020nc",
+            "disposition": {"default": 1},
+            "tags": {"DURATION": "00:01:40.000000000"},
+            "side_data_list": [
+                {
+                    "side_data_type": "DOVI configuration record",
+                    "dv_profile": 8,
+                    "dv_bl_signal_compatibility_id": 1,
+                }
+            ],
+        }
+    )
+    source.streams[1] = StreamInfo.from_probe(
+        {
+            "index": 1,
+            "codec_type": "audio",
+            "codec_name": "eac3",
+            "channels": 8,
+            "channel_layout": "7.1",
+            "disposition": {"default": 1},
+            "tags": {"language": "fra", "DURATION": "00:01:40.000000000"},
+        }
+    )
+
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="hvc1",
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General", "CodecID_Compatible": "isom/dby1/iso2/mp41"},
+                    {
+                        "@type": "Video",
+                        "HDR_Format": "Dolby Vision / SMPTE ST 2086",
+                        "HDR_Format_Profile": "dvhe.08",
+                        "HDR_Format_Compatibility": "HDR10 / HDR10",
+                        "CodecID": "hvc1",
+                    },
+                ]
+            }
+        },
+    )
+    output.streams[0].duration = 100.0
+    output.streams[1].duration = 100.0
+    output.duration = 100.0
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Duration delta too high" in reason for reason in result.reasons)
+
+
+def test_validator_accepts_hi_marker_preserved_via_sdh_title_suffix():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(Path("/tmp/source.mkv"), "matroska,webm", has_dv=True, codec_tag=None)
+    source.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "disposition": {"hearing_impaired": 1},
+                "tags": {"language": "eng", "title": "Full"},
+            }
+        )
+    )
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="hvc1",
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General", "CodecID_Compatible": "isom/dby1/iso2/mp41"},
+                    {
+                        "@type": "Video",
+                        "HDR_Format": "Dolby Vision / SMPTE ST 2086",
+                        "HDR_Format_Profile": "dvhe.08",
+                        "HDR_Format_Compatibility": "HDR10 / HDR10",
+                        "CodecID": "hvc1",
+                    },
+                    {
+                        "@type": "Text",
+                        "CodecID": "tx3g",
+                        "Language": "en",
+                        "Title": "Full SDH",
+                        "Default": "No",
+                        "Forced": "No",
+                    },
+                ]
+            }
+        },
+    )
+    output.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "subtitle",
+                "codec_name": "mov_text",
+                "codec_tag_string": "tx3g",
+                "disposition": {"default": 0},
+                "tags": {"language": "eng", "title": "Full SDH"},
+            }
+        )
+    )
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True

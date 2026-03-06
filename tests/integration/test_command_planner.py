@@ -378,7 +378,7 @@ def test_replace_original_mode_keeps_series_tree_and_replaces_in_place():
     assert str(plan.target_path) == "/Volumes/Media/Series/Black Mirror/S1/Black.Mirror.S01E01.mp4"
 
 
-def test_dovi_muxer_plan_is_selected_for_dv_safe_remux(tmp_path: Path):
+def test_dovi_muxer_plan_uses_wrapper_to_force_video_frame_rate(tmp_path: Path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ["DoViMuxer", "MP4Box", "mediainfo", "mp4muxer", "ffmpeg", "ffmpeg_dovi_compat"]:
@@ -454,7 +454,13 @@ def test_dovi_muxer_plan_is_selected_for_dv_safe_remux(tmp_path: Path):
     assert not Path(cmd[1]).name.startswith(".")
     assert "-mp4box" in cmd
     assert "-mediainfo" in cmd
-    assert "-mp4muxer" in cmd
+    wrapper_path = Path(cmd[cmd.index("-mp4muxer") + 1])
+    assert wrapper_path in plan.cleanup_paths
+    assert wrapper_path.exists()
+    wrapper_text = wrapper_path.read_text(encoding="utf-8")
+    assert "--input-video-frame-rate" in wrapper_text
+    assert "24/1" in wrapper_text
+    assert str(bin_dir / "mp4muxer") in wrapper_text
     assert ["-map", "0:v:0"] == cmd[cmd.index("-map") : cmd.index("-map") + 2]
     assert "0:a:0" in cmd
     assert "0:s:0" in cmd
@@ -462,6 +468,85 @@ def test_dovi_muxer_plan_is_selected_for_dv_safe_remux(tmp_path: Path):
     assert "a:0" in cmd
     assert cmd[-1] == "-y"
     assert plan.steps[0].cwd == plan.target_path.parent
+
+
+def test_dovi_muxer_plan_trims_only_overlong_audio_tracks_with_mp4box_wrapper(tmp_path: Path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ["DoViMuxer", "MP4Box", "mediainfo", "mp4muxer", "ffmpeg", "ffmpeg_dovi_compat"]:
+        path = bin_dir / name
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    cfg = AppConfig.from_dict(
+        {
+            "remux": {"preferred_container": "mp4"},
+            "tooling": {
+                "ffmpeg_bin": str(bin_dir / "ffmpeg"),
+                "dovi_muxer_bin": str(bin_dir / "DoViMuxer"),
+                "mp4box_bin": str(bin_dir / "MP4Box"),
+                "mediainfo_bin": str(bin_dir / "mediainfo"),
+                "mp4muxer_bin": str(bin_dir / "mp4muxer"),
+            },
+        }
+    )
+    media = _media(
+        "/Volumes/Media/Movies/dv_mismatch.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "pix_fmt": "yuv420p10le",
+                "width": 3840,
+                "height": 1608,
+                "avg_frame_rate": "24000/1001",
+                "tags": {"DURATION": "01:40:53.840000000"},
+                "disposition": {"default": 1},
+                "side_data_list": [{"side_data_type": "DOVI configuration record", "dv_profile": "8.1"}],
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "fre", "DURATION": "01:40:53.856000000"},
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 2,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "eng", "DURATION": "01:41:09.472000000"},
+                "disposition": {"default": 0},
+            },
+        ],
+    )
+    decision = Decision(
+        strategy=Strategy.REMUX_ONLY,
+        case_label=CaseLabel.F,
+        reasons=["DoViMuxer path"],
+        expected_container="mp4",
+        expected_direct_play_safe=True,
+        use_dovi_muxer=True,
+    )
+    _, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
+
+    cmd = plan.steps[0].command
+    mp4box_wrapper = Path(cmd[cmd.index("-mp4box") + 1])
+    assert mp4box_wrapper in plan.cleanup_paths
+    assert mp4box_wrapper.exists()
+    wrapper_text = mp4box_wrapper.read_text(encoding="utf-8")
+    assert str(bin_dir / "MP4Box") in wrapper_text
+    assert "_Audio1." in wrapper_text
+    assert ":dur=6053.840" in wrapper_text
+    assert "_Audio0." not in wrapper_text
 
 
 def test_dovi_muxer_plan_rejects_image_subtitles_without_ocr(tmp_path: Path):

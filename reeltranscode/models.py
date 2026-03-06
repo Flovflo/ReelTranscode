@@ -68,6 +68,7 @@ class StreamInfo:
     channel_layout: str | None = None
     language: str | None = None
     title: str | None = None
+    duration: float | None = None
     disposition: StreamDisposition = field(default_factory=StreamDisposition)
     color_primaries: str | None = None
     color_transfer: str | None = None
@@ -84,6 +85,9 @@ class StreamInfo:
         parsed_bit_rate = int(bit_rate) if isinstance(bit_rate, str) and bit_rate.isdigit() else None
         if isinstance(bit_rate, int):
             parsed_bit_rate = bit_rate
+        parsed_duration = _probe_duration_seconds(raw.get("duration"))
+        if parsed_duration is None:
+            parsed_duration = _duration_tag_seconds(tags.get("DURATION"))
         return cls(
             index=int(raw["index"]),
             codec_type=raw.get("codec_type", "unknown"),
@@ -101,6 +105,7 @@ class StreamInfo:
             channel_layout=raw.get("channel_layout"),
             language=tags.get("language"),
             title=tags.get("title"),
+            duration=parsed_duration,
             disposition=StreamDisposition.from_probe(raw.get("disposition")),
             color_primaries=raw.get("color_primaries"),
             color_transfer=raw.get("color_transfer"),
@@ -214,6 +219,7 @@ class ExecutionPlan:
     case_label: CaseLabel
     steps: list[CommandStep]
     external_subtitle_outputs: list[Path] = field(default_factory=list)
+    cleanup_paths: list[Path] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -276,3 +282,32 @@ def _dv_field(raw: dict[str, Any], *keys: str) -> str | None:
         if text:
             return text
     return None
+
+
+def _probe_duration_seconds(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _duration_tag_seconds(value: Any) -> float | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    parts = text.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        hours = float(parts[0])
+        minutes = float(parts[1])
+        seconds = float(parts[2])
+    except ValueError:
+        return None
+    return (hours * 3600.0) + (minutes * 60.0) + seconds
