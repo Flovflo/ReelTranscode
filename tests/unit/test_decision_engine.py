@@ -260,7 +260,7 @@ def test_dv_fragile_uses_dovi_muxer_with_subrip_subtitles(tmp_path: Path):
     assert decision.use_dovi_muxer is True
 
 
-def test_dv_fragile_uses_dovi_muxer_with_pgs_when_externalization_is_enabled(tmp_path: Path):
+def test_dv_fragile_does_not_use_dovi_muxer_with_image_subtitles(tmp_path: Path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ["DoViMuxer", "MP4Box", "mediainfo", "mp4muxer", "ffmpeg", "ffmpeg_dovi_compat"]:
@@ -300,4 +300,4 @@ def test_dv_fragile_uses_dovi_muxer_with_pgs_when_externalization_is_enabled(tmp
     decision, _ = engine.decide(media)
     assert decision.case_label == CaseLabel.F
     assert decision.strategy == Strategy.REMUX_ONLY
-    assert decision.use_dovi_muxer is True
+    assert decision.use_dovi_muxer is False

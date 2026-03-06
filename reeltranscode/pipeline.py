@@ -226,7 +226,10 @@ class PipelineProcessor:
                 else:
                     ffmpeg_commands = [step.command for step in plan.steps]
                     for step in plan.steps:
-                        result = run_with_retry(lambda cmd=step.command: self.runner.run(cmd), self.config.retry)
+                        result = run_with_retry(
+                            lambda cmd=step.command, cwd=step.cwd: self.runner.run(cmd, cwd=cwd),
+                            self.config.retry,
+                        )
                         missing_outputs = [output for output in step.expected_outputs if not output.exists()]
                         if missing_outputs:
                             missing_text = ", ".join(str(output) for output in missing_outputs)
@@ -247,6 +250,8 @@ class PipelineProcessor:
                         output_media, _ = self.analyzer.analyze(validation_path)
                         validation = self.validator.validate(media, output_media, decision, plan=plan)
                         if validation.ok:
+                            if validation.notes:
+                                validations.extend(validation.notes)
                             validations.append("Validation passed")
                         else:
                             validations.extend(validation.reasons)
@@ -361,8 +366,22 @@ class PipelineProcessor:
             error_class=error_class,
             error_message=error_message,
         )
-        report_path = self.reporter.write_job_report(report)
-        self.state_store.mark_job_finished(job_id, status, error_class, error_message, report_path)
+        report_path = None
+        final_status = status
+        final_error_class = error_class
+        final_error_message = error_message
+        try:
+            report_path = self.reporter.write_job_report(report)
+        except OSError as exc:
+            LOGGER.exception("Unable to write job report for %s", path)
+            final_status = JobStatus.FAILED
+            final_error_class = exc.__class__.__name__
+            final_error_message = str(exc)
+            report.status = final_status.value
+            report.error_class = final_error_class
+            report.error_message = final_error_message
+
+        self.state_store.mark_job_finished(job_id, final_status, final_error_class, final_error_message, report_path)
         if stream_fp and metadata_fp:
             self.state_store.upsert_file_state(
                 path,
@@ -372,7 +391,7 @@ class PipelineProcessor:
                 mtime_ns,
                 stream_fp,
                 metadata_fp,
-                status,
+                final_status,
                 job_id,
             )
         return report

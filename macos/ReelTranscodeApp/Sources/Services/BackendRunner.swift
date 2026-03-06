@@ -1,13 +1,16 @@
 import Foundation
 
 enum BackendRunnerError: LocalizedError {
-    case executableNotFound
+    case executableNotFound(searchedPaths: [String])
     case nonZeroExit(code: Int32, stderr: String)
 
     var errorDescription: String? {
         switch self {
-        case .executableNotFound:
-            return "ReelTranscodeCore executable not found"
+        case let .executableNotFound(searchedPaths):
+            if searchedPaths.isEmpty {
+                return "ReelTranscodeCore executable not found"
+            }
+            return "ReelTranscodeCore executable not found. Checked: \(searchedPaths.joined(separator: ", "))"
         case let .nonZeroExit(code, stderr):
             return "Backend command failed (\(code)): \(stderr)"
         }
@@ -22,25 +25,19 @@ struct CommandResult {
 
 actor BackendRunner {
     func run(arguments: [String]) async throws -> CommandResult {
-        if let primary = Self.embeddedExecutableURL(), FileManager.default.isExecutableFile(atPath: primary.path) {
-            do {
-                return try await runProcess(executableURL: primary, arguments: arguments)
-            } catch let BackendRunnerError.nonZeroExit(code, stderr) {
-                // If cached runtime is corrupted, retry once using alternate embedded location.
-                if code == 5 || stderr.localizedCaseInsensitiveContains("bootstrap failed") {
-                    if let alternate = Self.alternateEmbeddedExecutableURL(excluding: primary),
-                       FileManager.default.isExecutableFile(atPath: alternate.path) {
-                        return try await runProcess(executableURL: alternate, arguments: arguments)
-                    }
+        let primary = try Self.requireExecutableURL()
+        do {
+            return try await runProcess(executableURL: primary, arguments: arguments)
+        } catch let BackendRunnerError.nonZeroExit(code, stderr) {
+            // If cached runtime is corrupted, retry once using alternate embedded location.
+            if code == 5 || stderr.localizedCaseInsensitiveContains("bootstrap failed") {
+                if let alternate = Self.alternateEmbeddedExecutableURL(excluding: primary),
+                   FileManager.default.isExecutableFile(atPath: alternate.path) {
+                    return try await runProcess(executableURL: alternate, arguments: arguments)
                 }
-                throw BackendRunnerError.nonZeroExit(code: code, stderr: stderr)
             }
+            throw BackendRunnerError.nonZeroExit(code: code, stderr: stderr)
         }
-
-        guard let fallback = URL(string: "file:///usr/bin/env") else {
-            throw BackendRunnerError.executableNotFound
-        }
-        return try await runProcess(executableURL: fallback, arguments: ["python3", "-m", "reeltranscode"] + arguments)
     }
 
     func runJSON<T: Decodable>(arguments: [String], as type: T.Type) async throws -> T {
@@ -63,30 +60,32 @@ actor BackendRunner {
     }
 
     static func embeddedExecutableURL() -> URL? {
-        // Always prefer the bundle runtime first. It is immutable and less prone to copy corruption.
-        if let bundleExecutable = bundleEmbeddedExecutableURL(), FileManager.default.fileExists(atPath: bundleExecutable.path) {
-            return bundleExecutable
-        }
-
-        let appSupportExecutable = appSupportEmbeddedExecutableURL()
-        if FileManager.default.fileExists(atPath: appSupportExecutable.path) {
-            return appSupportExecutable
-        }
-        return nil
+        candidateEmbeddedExecutableURLs().first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     static func alternateEmbeddedExecutableURL(excluding current: URL) -> URL? {
-        let candidates: [URL] = [
-            bundleEmbeddedExecutableURL(),
-            appSupportEmbeddedExecutableURL()
-        ].compactMap { $0 }
-
-        for candidate in candidates where candidate.path != current.path {
+        for candidate in candidateEmbeddedExecutableURLs() where candidate.path != current.path {
             if FileManager.default.fileExists(atPath: candidate.path) {
                 return candidate
             }
         }
         return nil
+    }
+
+    static func requireExecutableURL() throws -> URL {
+        for candidate in candidateEmbeddedExecutableURLs() where FileManager.default.isExecutableFile(atPath: candidate.path) {
+            return candidate
+        }
+        throw BackendRunnerError.executableNotFound(
+            searchedPaths: candidateEmbeddedExecutableURLs().map(\.path)
+        )
+    }
+
+    private static func candidateEmbeddedExecutableURLs() -> [URL] {
+        [
+            bundleEmbeddedExecutableURL(),
+            appSupportEmbeddedExecutableURL()
+        ].compactMap { $0 }
     }
 
     static func ffmpegBinaryURL() -> URL? {

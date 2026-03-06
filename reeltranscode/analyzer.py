@@ -3,13 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from reeltranscode.config import AppConfig
-from reeltranscode.models import MediaInfo, StreamInfo
+from reeltranscode.models import DolbyVisionEvidence, MediaInfo, StreamInfo, SubtitleTrackState
 
 LOGGER = logging.getLogger(__name__)
 
@@ -70,6 +71,32 @@ class FFprobeAnalyzer:
         append(shutil.which("ffprobe"))
         return candidates
 
+    def _mediainfo_candidates(self) -> list[str]:
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def append(candidate: str | None) -> None:
+            if not candidate:
+                return
+            normalized = str(candidate).strip()
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            candidates.append(normalized)
+
+        append(self.config.tooling.mediainfo_bin)
+
+        ffmpeg_bin = str(self.config.tooling.ffmpeg_bin).strip()
+        if "/" in ffmpeg_bin:
+            sibling = str(Path(ffmpeg_bin).expanduser().with_name("mediainfo"))
+            append(sibling)
+
+        append("/opt/homebrew/bin/mediainfo")
+        append("/usr/local/bin/mediainfo")
+        append("/usr/bin/mediainfo")
+        append(shutil.which("mediainfo"))
+        return candidates
+
     @staticmethod
     def _probe_failure_message(path: Path, errors: list[str]) -> str:
         details = "; ".join(errors)
@@ -120,14 +147,16 @@ class FFprobeAnalyzer:
             size_value = int(size) if isinstance(size, str) and size.isdigit() else None
 
             streams = [StreamInfo.from_probe(item) for item in payload.get("streams", [])]
+            format_name = str(format_node.get("format_name", ""))
             media = MediaInfo(
                 path=path,
-                format_name=str(format_node.get("format_name", "")),
+                format_name=format_name,
                 duration=duration_value,
                 bit_rate=bit_rate_value,
                 size=size_value,
                 streams=streams,
                 raw_probe=payload,
+                raw_mediainfo=self._load_mediainfo(path, format_name),
             )
             return media, command
 
@@ -135,25 +164,21 @@ class FFprobeAnalyzer:
 
     @staticmethod
     def detect_dolby_vision(media: MediaInfo) -> tuple[bool, str | None]:
-        for stream in media.video_streams:
-            if stream.dv_profile:
-                profile = stream.dv_profile
-                if profile.isdigit():
-                    profile = f"{profile}.0"
-                return True, profile
-            for side_data in stream.side_data_list:
-                side_type = str(side_data.get("side_data_type", "")).lower()
-                if "dovi" in side_type or "dolby vision" in side_type:
-                    profile = side_data.get("dv_profile") or side_data.get("dv_profile_string")
-                    if profile is None:
-                        profile = side_data.get("profile")
-                    if profile is None:
-                        return True, None
-                    profile_str = str(profile)
-                    if profile_str.isdigit():
-                        profile_str = f"{profile_str}.0"
-                    return True, profile_str
-        return False, None
+        info = FFprobeAnalyzer.inspect_dolby_vision(media)
+        return info.present, info.profile
+
+    @staticmethod
+    def inspect_dolby_vision(media: MediaInfo) -> DolbyVisionEvidence:
+        ffprobe_info = FFprobeAnalyzer._inspect_dolby_vision_from_ffprobe(media)
+        mediainfo_info = FFprobeAnalyzer._inspect_dolby_vision_from_mediainfo(media.raw_mediainfo)
+
+        if FFprobeAnalyzer.is_container_apple_compatible(media) and mediainfo_info.present:
+            return mediainfo_info
+        if ffprobe_info.present:
+            return ffprobe_info
+        if mediainfo_info.present:
+            return mediainfo_info
+        return mediainfo_info
 
     @staticmethod
     def detect_hdr10(media: MediaInfo) -> bool:
@@ -254,9 +279,133 @@ class FFprobeAnalyzer:
     def mp4_subtitle_compatible(media: MediaInfo) -> tuple[bool, list[str]]:
         reasons: list[str] = []
         for stream in media.subtitle_streams:
+            if stream.is_image_subtitle:
+                reasons.append(
+                    f"Image subtitle codec {stream.codec_name} requires OCR for Apple-native MP4"
+                )
+                continue
             if (stream.codec_name or "") not in MP4_SUBTITLE_CODECS:
                 reasons.append(f"Subtitle codec {stream.codec_name} incompatible with MP4")
         return len(reasons) == 0, reasons
+
+    @staticmethod
+    def subtitle_track_states(media: MediaInfo) -> list[SubtitleTrackState]:
+        details: list[SubtitleTrackState] = []
+        mediainfo_tracks = FFprobeAnalyzer._mediainfo_text_tracks(media.raw_mediainfo)
+
+        for index, stream in enumerate(media.subtitle_streams):
+            track = mediainfo_tracks[index] if index < len(mediainfo_tracks) else {}
+            title = stream.title or _clean_mediainfo_text(track.get("Title"))
+            language = _normalize_language(stream.language or track.get("Language"))
+            codec_name = (stream.codec_name or "").lower() or _mediainfo_subtitle_codec(track)
+            forced = stream.disposition.forced or _mediainfo_yes(track.get("Forced"))
+            hearing_impaired = stream.disposition.hearing_impaired or str(track.get("ServiceKind", "")).upper() == "HI"
+            captions = stream.disposition.captions or hearing_impaired
+            details.append(
+                SubtitleTrackState(
+                    codec_name=codec_name or None,
+                    language=language,
+                    title=title,
+                    default=stream.disposition.default or _mediainfo_yes(track.get("Default")),
+                    forced=forced,
+                    hearing_impaired=hearing_impaired,
+                    captions=captions,
+                )
+            )
+        return details
+
+    def _load_mediainfo(self, path: Path, format_name: str) -> dict[str, Any]:
+        container_names = {item.strip().lower() for item in format_name.split(",") if item.strip()}
+        if APPLE_CONTAINERS.isdisjoint(container_names):
+            return {}
+
+        for mediainfo_bin in self._mediainfo_candidates():
+            command = [mediainfo_bin, "--Output=JSON", str(path)]
+            try:
+                process = subprocess.run(
+                    command,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except OSError:
+                continue
+            if process.returncode != 0:
+                continue
+            try:
+                payload = json.loads(process.stdout)
+            except json.JSONDecodeError:
+                continue
+            if mediainfo_bin != self.config.tooling.mediainfo_bin:
+                LOGGER.warning(
+                    "Primary mediainfo unavailable, using fallback binary '%s' for %s",
+                    mediainfo_bin,
+                    path,
+                )
+                self.config.tooling.mediainfo_bin = mediainfo_bin
+            return payload
+        return {}
+
+    @staticmethod
+    def _inspect_dolby_vision_from_ffprobe(media: MediaInfo) -> DolbyVisionEvidence:
+        for stream in media.video_streams:
+            side_data_list = list(stream.side_data_list or [])
+            for side_data in side_data_list:
+                side_type = str(side_data.get("side_data_type", "")).lower()
+                if "dovi" not in side_type and "dolby vision" not in side_type:
+                    continue
+                profile = _normalize_dolby_vision_profile(
+                    side_data.get("dv_profile")
+                    or side_data.get("dv_profile_string")
+                    or side_data.get("profile")
+                    or stream.dv_profile,
+                    compatibility_id=side_data.get("dv_bl_signal_compatibility_id"),
+                )
+                return DolbyVisionEvidence(present=True, profile=profile, source="ffprobe")
+
+            if stream.dv_profile:
+                profile = _normalize_dolby_vision_profile(stream.dv_profile)
+                return DolbyVisionEvidence(present=True, profile=profile, source="ffprobe")
+
+        return DolbyVisionEvidence(present=False)
+
+    @staticmethod
+    def _inspect_dolby_vision_from_mediainfo(raw_mediainfo: dict[str, Any]) -> DolbyVisionEvidence:
+        if not raw_mediainfo:
+            return DolbyVisionEvidence(present=False)
+
+        media_node = raw_mediainfo.get("media", {}) or {}
+        tracks = media_node.get("track", []) or []
+        general_track = next((track for track in tracks if str(track.get("@type")) == "General"), {})
+        compatible_brands = str(general_track.get("CodecID_Compatible", "")).lower()
+        brand_hint = "dby1" in compatible_brands
+
+        for track in tracks:
+            if str(track.get("@type")) != "Video":
+                continue
+            hdr_format = str(track.get("HDR_Format", ""))
+            if "dolby vision" not in hdr_format.lower():
+                continue
+            profile = _normalize_dolby_vision_profile(
+                track.get("HDR_Format_Profile") or track.get("Format_Profile"),
+                compatibility_text=str(track.get("HDR_Format_Compatibility", "")),
+            )
+            return DolbyVisionEvidence(
+                present=True,
+                profile=profile,
+                source="mediainfo",
+                brand_hint=brand_hint,
+            )
+
+        return DolbyVisionEvidence(present=False, brand_hint=brand_hint, source="mediainfo-brand" if brand_hint else None)
+
+    @staticmethod
+    def _mediainfo_text_tracks(raw_mediainfo: dict[str, Any]) -> list[dict[str, Any]]:
+        if not raw_mediainfo:
+            return []
+        media_node = raw_mediainfo.get("media", {}) or {}
+        tracks = media_node.get("track", []) or []
+        return [track for track in tracks if str(track.get("@type")) == "Text"]
 
 
 def _frame_rate_to_float(value: str | None) -> float | None:
@@ -275,3 +424,78 @@ def _frame_rate_to_float(value: str | None) -> float | None:
         return float(value)
     except ValueError:
         return None
+
+
+def _normalize_dolby_vision_profile(
+    profile: Any,
+    *,
+    compatibility_id: Any = None,
+    compatibility_text: str | None = None,
+) -> str | None:
+    if profile is None:
+        return None
+
+    text = str(profile).strip().lower()
+    if not text:
+        return None
+
+    match = re.search(r"(?:dvh[e1]\.)?(\d{1,2})(?:[._](\d{1,2}))?", text)
+    if not match:
+        return text
+
+    major = int(match.group(1))
+    minor = int(match.group(2)) if match.group(2) is not None else None
+
+    if minor is None and compatibility_id not in {None, ""}:
+        try:
+            minor = int(str(compatibility_id).strip())
+        except ValueError:
+            minor = None
+
+    if minor is None and compatibility_text and major == 8 and "hdr10" in compatibility_text.lower():
+        minor = 1
+
+    if minor is None:
+        minor = 0
+    return f"{major}.{minor}"
+
+
+def _normalize_language(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+
+    aliases = {
+        "en": "eng",
+        "eng": "eng",
+        "fr": "fra",
+        "fre": "fra",
+        "fra": "fra",
+        "ja": "jpn",
+        "jpn": "jpn",
+        "und": "und",
+    }
+    return aliases.get(text, text)
+
+
+def _mediainfo_yes(value: Any) -> bool:
+    if value is None:
+        return False
+    return "yes" in str(value).strip().lower()
+
+
+def _mediainfo_subtitle_codec(track: dict[str, Any]) -> str:
+    codec_id = str(track.get("CodecID", "")).lower()
+    format_name = str(track.get("Format", "")).lower()
+    if codec_id == "tx3g" or "timed text" in format_name:
+        return "mov_text"
+    return codec_id or format_name
+
+
+def _clean_mediainfo_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

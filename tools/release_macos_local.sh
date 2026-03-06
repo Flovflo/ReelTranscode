@@ -32,6 +32,8 @@ xcodebuild \
 
 cp -R "$DERIVED_DATA_PATH/Build/Products/Release/ReelTranscodeApp.app" "$APP_PATH"
 
+"$ROOT_DIR/tools/smoke_test_packaged_backend.sh" "$APP_PATH"
+
 hdiutil create \
   -volname "ReelTranscode" \
   -srcfolder "$APP_PATH" \

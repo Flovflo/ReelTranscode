@@ -45,6 +45,8 @@ xcodebuild \
 
 cp -R "$ARCHIVE_PATH/Products/Applications/ReelTranscodeApp.app" "$APP_BUNDLE"
 
+"$ROOT_DIR/tools/smoke_test_packaged_backend.sh" "$APP_BUNDLE"
+
 # Sign embedded executables first, then app.
 find "$APP_BUNDLE/Contents/Resources" -type f \( -path "*/bin/*" -o -name "ReelTranscodeCore" -o -name "*.dylib" \) -print0 | while IFS= read -r -d '' file; do
   codesign --force --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY" "$file"

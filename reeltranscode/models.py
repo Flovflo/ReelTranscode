@@ -37,6 +37,7 @@ class StreamDisposition:
     default: bool = False
     forced: bool = False
     hearing_impaired: bool = False
+    captions: bool = False
 
     @classmethod
     def from_probe(cls, raw: dict[str, Any] | None) -> "StreamDisposition":
@@ -45,6 +46,7 @@ class StreamDisposition:
             default=bool(raw.get("default", 0)),
             forced=bool(raw.get("forced", 0)),
             hearing_impaired=bool(raw.get("hearing_impaired", 0)),
+            captions=bool(raw.get("captions", 0)),
         )
 
 
@@ -139,6 +141,7 @@ class MediaInfo:
     size: int | None
     streams: list[StreamInfo]
     raw_probe: dict[str, Any]
+    raw_mediainfo: dict[str, Any] = field(default_factory=dict)
 
     @property
     def container_names(self) -> set[str]:
@@ -199,6 +202,7 @@ class CommandStep:
     name: str
     command: list[str]
     expected_outputs: list[Path]
+    cwd: Path | None = None
 
 
 @dataclass(slots=True)
@@ -217,6 +221,26 @@ class ExecutionPlan:
 class ValidationResult:
     ok: bool
     reasons: list[str]
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class DolbyVisionEvidence:
+    present: bool
+    profile: str | None = None
+    source: str | None = None
+    brand_hint: bool = False
+
+
+@dataclass(slots=True)
+class SubtitleTrackState:
+    codec_name: str | None
+    language: str | None
+    title: str | None
+    default: bool
+    forced: bool
+    hearing_impaired: bool
+    captions: bool
 
 
 @dataclass(slots=True)

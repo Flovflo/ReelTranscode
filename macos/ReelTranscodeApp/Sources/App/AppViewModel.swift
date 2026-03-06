@@ -133,18 +133,7 @@ final class AppViewModel: ObservableObject {
                 )
             }
 
-            let resolvedExecutableURL: URL
-            if let bundleExecutable = BackendRunner.bundleEmbeddedExecutableURL(),
-               FileManager.default.isExecutableFile(atPath: bundleExecutable.path) {
-                resolvedExecutableURL = bundleExecutable
-            } else {
-                let appSupportExecutable = BackendRunner.appSupportEmbeddedExecutableURL()
-                if FileManager.default.isExecutableFile(atPath: appSupportExecutable.path) {
-                    resolvedExecutableURL = appSupportExecutable
-                } else {
-                    throw BackendRunnerError.executableNotFound
-                }
-            }
+            let resolvedExecutableURL = try BackendRunner.requireExecutableURL()
 
             try launchdService.installOrUpdateWatchAgent(
                 executablePath: resolvedExecutableURL.path,

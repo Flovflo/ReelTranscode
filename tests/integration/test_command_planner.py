@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from reeltranscode.config import AppConfig
 from reeltranscode.decision_engine import DecisionEngine
 from reeltranscode.models import CaseLabel, Decision, MediaInfo, StreamInfo, Strategy
@@ -66,6 +68,107 @@ def test_plan_for_sample1_keeps_video_copy():
     assert "-tag:v" in cmd
     assert cmd[cmd.index("-tag:v") + 1] == "hvc1"
     assert str(plan.target_path).endswith(".mp4")
+    assert plan.steps[0].cwd == plan.target_path.parent
+
+
+def test_mp4_plan_preserves_text_subtitle_metadata_and_flags():
+    cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4"}})
+    media = _media(
+        "/Volumes/Media/Movies/SpiderVerse.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "pix_fmt": "yuv420p10le",
+                "width": 3840,
+                "height": 1608,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "fra"},
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 2,
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "tags": {"language": "fre", "title": "VFF Forced"},
+                "disposition": {"default": 1, "forced": 1},
+            },
+            {
+                "index": 3,
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "tags": {"language": "eng", "title": "SDH"},
+                "disposition": {"default": 0, "hearing_impaired": 1, "captions": 1},
+            },
+        ],
+    )
+
+    engine = DecisionEngine(cfg)
+    decision, comp = engine.decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
+
+    cmd = plan.steps[0].command
+    assert cmd[cmd.index("-c:s:0") + 1] == "mov_text"
+    assert cmd[cmd.index("-metadata:s:s:0") + 1] == "language=fre"
+    assert "title=VFF Forced" in cmd
+    assert cmd[cmd.index("-disposition:s:0") + 1] == "default+forced"
+    assert cmd[cmd.index("-c:s:1") + 1] == "mov_text"
+    assert "title=SDH" in cmd
+    assert "hearing_impaired+captions" in cmd
+
+
+def test_mp4_plan_rejects_image_subtitles_without_ocr():
+    cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4"}})
+    media = _media(
+        "/Volumes/Media/Movies/ForeignMovie.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "pix_fmt": "yuv420p10le",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "eng"},
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 2,
+                "codec_type": "subtitle",
+                "codec_name": "hdmv_pgs_subtitle",
+                "tags": {"language": "eng"},
+                "disposition": {"default": 0},
+            },
+        ],
+    )
+
+    engine = DecisionEngine(cfg)
+    decision, comp = engine.decide(media)
+
+    with pytest.raises(RuntimeError, match="Image subtitles require OCR"):
+        CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
 
 
 def test_video_transcode_plan_uses_videotoolbox():
@@ -358,9 +461,10 @@ def test_dovi_muxer_plan_is_selected_for_dv_safe_remux(tmp_path: Path):
     assert "-default" in cmd
     assert "a:0" in cmd
     assert cmd[-1] == "-y"
+    assert plan.steps[0].cwd == plan.target_path.parent
 
 
-def test_dovi_muxer_plan_externalizes_pgs_sidecar_next_to_target(tmp_path: Path):
+def test_dovi_muxer_plan_rejects_image_subtitles_without_ocr(tmp_path: Path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ["DoViMuxer", "MP4Box", "mediainfo", "mp4muxer", "ffmpeg", "ffmpeg_dovi_compat"]:
@@ -430,11 +534,5 @@ def test_dovi_muxer_plan_externalizes_pgs_sidecar_next_to_target(tmp_path: Path)
         use_dovi_muxer=True,
     )
     _, comp = DecisionEngine(cfg).decide(media)
-    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
-
-    assert len(plan.steps) == 2
-    assert plan.steps[0].name == "dovi_muxer"
-    assert plan.steps[1].name == "subtitle_export"
-    assert "0:s:0" not in plan.steps[0].command
-    assert str(plan.external_subtitle_outputs[0]).endswith("dv_movie__stream_0.eng.sup")
-    assert str(plan.steps[1].command[-1]).endswith("dv_movie__stream_0.eng.sup")
+    with pytest.raises(RuntimeError, match="Image subtitles require OCR"):
+        CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))

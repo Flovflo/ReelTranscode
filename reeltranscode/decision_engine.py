@@ -81,12 +81,8 @@ class DecisionEngine:
                 continue
             if codec in {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt"}:
                 continue
-            if (
-                stream.is_image_subtitle
-                and self.config.subtitles.mode == "convert_or_externalize"
-                and not self.config.subtitles.ocr_image_subtitles
-            ):
-                continue
+            if stream.is_image_subtitle:
+                return False
             if not codec:
                 return False
             return False

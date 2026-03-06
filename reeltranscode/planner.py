@@ -44,6 +44,7 @@ class CommandPlanner:
     ) -> ExecutionPlan:
         target_path = self._build_target_path(media.path, source_root)
         temp_path = self._build_temp_path(media.path, target_path)
+        step_cwd = target_path.parent
         notes: list[str] = []
         steps: list[CommandStep] = []
         subtitle_sidecars: list[Path] = []
@@ -58,6 +59,8 @@ class CommandPlanner:
                 steps=[],
                 notes=["No-op path selected"],
             )
+
+        self._ensure_apple_native_mp4_subtitles(media)
 
         if decision.use_dovi_muxer:
             return self._build_dovi_muxer_plan(media, decision, source_root)
@@ -84,7 +87,7 @@ class CommandPlanner:
             cmd.extend(["-movflags", movflags])
 
         cmd.append(str(temp_path))
-        steps.append(CommandStep(name="main_ffmpeg", command=cmd, expected_outputs=[temp_path]))
+        steps.append(CommandStep(name="main_ffmpeg", command=cmd, expected_outputs=[temp_path], cwd=step_cwd))
 
         for export in subtitle_exports:
             subtitle_sidecars.append(export.output_path)
@@ -106,6 +109,7 @@ class CommandPlanner:
                     name="subtitle_export",
                     command=export_cmd,
                     expected_outputs=[export.output_path],
+                    cwd=step_cwd,
                 )
             )
 
@@ -133,6 +137,7 @@ class CommandPlanner:
 
         target_path = self._build_target_path(media.path, source_root)
         temp_path = self._build_temp_path(media.path, target_path, hidden=False)
+        step_cwd = target_path.parent
         cmd = [caps.dovi_muxer_bin, str(temp_path), "-i", str(media.path), "-ffmpeg", caps.ffmpeg_bin]
         notes = ["DoViMuxer Dolby Vision safe remux path selected"]
         subtitle_sidecars: list[Path] = []
@@ -160,32 +165,6 @@ class CommandPlanner:
         output_sub_index = 0
         for source_sub_index, stream in enumerate(media.subtitle_streams):
             lang = (stream.language or "und").lower()
-            if stream.is_image_subtitle:
-                export_ext, export_codec = self._image_subtitle_export(stream.codec_name)
-                export = self._subtitle_export_path(target_path, source_sub_index, lang, export_ext)
-                subtitle_sidecars.append(export)
-                notes.append(f"Externalized image subtitle stream {source_sub_index} -> {export.name}")
-                steps.append(
-                    CommandStep(
-                        name="subtitle_export",
-                        command=[
-                            caps.ffmpeg_bin,
-                            "-hide_banner",
-                            "-nostdin",
-                            "-y",
-                            "-i",
-                            str(media.path),
-                            "-map",
-                            f"0:s:{source_sub_index}",
-                            "-c:s",
-                            export_codec,
-                            str(export),
-                        ],
-                        expected_outputs=[export],
-                    )
-                )
-                continue
-
             cmd.extend(["-map", f"0:s:{source_sub_index}"])
             if meta := self._dovi_meta_arg("s", output_sub_index, lang, stream.title):
                 cmd.extend(["-meta", meta])
@@ -196,7 +175,7 @@ class CommandPlanner:
             output_sub_index += 1
 
         cmd.append("-y")
-        steps.insert(0, CommandStep(name="dovi_muxer", command=cmd, expected_outputs=[temp_path]))
+        steps.insert(0, CommandStep(name="dovi_muxer", command=cmd, expected_outputs=[temp_path], cwd=step_cwd))
         return ExecutionPlan(
             source_path=media.path,
             target_path=target_path,
@@ -349,41 +328,35 @@ class CommandPlanner:
         output_sub_index = 0
         for source_sub_index, stream in enumerate(media.subtitle_streams):
             lang = (stream.language or "und").lower()
-            map_spec = f"0:s:{source_sub_index}"
             if stream.is_image_subtitle:
-                args.extend(["-map", f"-0:s:{source_sub_index}"])
-                ext, codec = self._image_subtitle_export(stream.codec_name)
-                export = self._subtitle_export_path(target_path, source_sub_index, lang, ext)
-                exports.append(SubtitleExport(map_spec=map_spec, output_path=export, codec=codec))
-                notes.append(f"Externalized image subtitle stream {source_sub_index} -> {export.name}")
-                continue
-
-            if self.config.subtitles.convert_text_to_mov_text:
-                args.extend([f"-c:s:{output_sub_index}", "mov_text"])
-            else:
-                args.extend(["-map", f"-0:s:{source_sub_index}"])
-                export = self._subtitle_export_path(
-                    target_path,
-                    source_sub_index,
-                    lang,
-                    self.config.subtitles.external_subtitle_format,
+                raise RuntimeError(
+                    "Image subtitles require OCR for Apple-native MP4 output; refusing to externalize "
+                    f"stream {source_sub_index} ({stream.codec_name or 'unknown'})"
                 )
-                exports.append(
-                    SubtitleExport(
-                        map_spec=map_spec,
-                        output_path=export,
-                        codec=self.config.subtitles.external_subtitle_format,
-                    )
-                )
-                notes.append(f"Externalized text subtitle stream {source_sub_index} -> {export.name}")
-                continue
 
+            args.extend([f"-c:s:{output_sub_index}", "mov_text"])
             args.extend([f"-metadata:s:s:{output_sub_index}", f"language={lang}"])
-            if stream.disposition.forced:
-                args.extend([f"-disposition:s:{output_sub_index}", "forced"])
+            if stream.title:
+                args.extend([f"-metadata:s:s:{output_sub_index}", f"title={stream.title}"])
+            args.extend(
+                [
+                    f"-disposition:s:{output_sub_index}",
+                    self._subtitle_disposition_value(stream),
+                ]
+            )
             output_sub_index += 1
 
         return args, exports, notes
+
+    def _ensure_apple_native_mp4_subtitles(self, media: MediaInfo) -> None:
+        if self._target_suffix() != ".mp4":
+            return
+        for source_sub_index, stream in enumerate(media.subtitle_streams):
+            if stream.is_image_subtitle:
+                raise RuntimeError(
+                    "Image subtitles require OCR for Apple-native MP4 output; refusing to externalize "
+                    f"stream {source_sub_index} ({stream.codec_name or 'unknown'})"
+                )
 
     def _build_target_path(self, source: Path, source_root: Path | None) -> Path:
         suffix = self._target_suffix()
@@ -439,6 +412,21 @@ class CommandPlanner:
 
     def _subtitle_export_path(self, target_path: Path, subtitle_index: int, lang: str, ext: str) -> Path:
         return target_path.with_name(f"{target_path.stem}__stream_{subtitle_index}.{lang}.{ext}")
+
+    @staticmethod
+    def _subtitle_disposition_value(stream) -> str:
+        values: list[str] = []
+        if stream.disposition.default:
+            values.append("default")
+        if stream.disposition.forced:
+            values.append("forced")
+        if stream.disposition.hearing_impaired:
+            values.append("hearing_impaired")
+        if stream.disposition.captions:
+            values.append("captions")
+        if not values and stream.title and "sdh" in stream.title.lower():
+            values.extend(["hearing_impaired", "captions"])
+        return "+".join(values) if values else "0"
 
 
 def _fps(value: str | None) -> float | None:

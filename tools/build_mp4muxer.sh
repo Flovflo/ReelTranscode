@@ -23,6 +23,20 @@ if [[ "$CURRENT_REF" != "$REPO_REF" ]]; then
   git -C "$SRC_DIR" checkout --force "$REPO_REF" >&2
 fi
 
+python3 - "$SRC_DIR/frontend/ema_mp4_mux_api.c" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+old = "    usr_cfg_mux_ptr->withopt                = 0;\n"
+new = "    usr_cfg_mux_ptr->withopt                = 0x1;  /** Force co64 chunk offsets for large DV MP4 outputs. */\n"
+text = path.read_text()
+if new not in text:
+    if old not in text:
+        raise SystemExit(f"mp4muxer patch target not found in {path}")
+    path.write_text(text.replace(old, new, 1))
+PY
+
 make -C "$BUILD_DIR" clean >/dev/null 2>&1 || true
 make -C "$BUILD_DIR" mp4muxer_release >&2
 
