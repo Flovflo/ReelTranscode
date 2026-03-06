@@ -19,17 +19,6 @@ struct RootView: View {
                     detailView
                 }
                 .frame(minWidth: 1000, minHeight: 680)
-                .toolbar {
-                    ToolbarItem {
-                        Button(model.isServiceRunning ? "Stop Watch" : "Start Watch") {
-                            if model.isServiceRunning {
-                                model.stopWatchService()
-                            } else {
-                                model.startWatchService()
-                            }
-                        }
-                    }
-                }
             }
         }
         .onReceive(refreshTimer) { _ in

@@ -97,6 +97,22 @@ actor BackendRunner {
         resolveToolBinary(toolName: "ffprobe", versionMarker: "ffprobe version")
     }
 
+    static func doviMuxerBinaryURL() -> URL? {
+        resolveOptionalToolBinary(toolNames: ["DoViMuxer", "dovimuxer"])
+    }
+
+    static func mp4boxBinaryURL() -> URL? {
+        resolveOptionalToolBinary(toolNames: ["MP4Box", "mp4box"])
+    }
+
+    static func mediainfoBinaryURL() -> URL? {
+        resolveOptionalToolBinary(toolNames: ["mediainfo", "MediaInfo"])
+    }
+
+    static func mp4muxerBinaryURL() -> URL? {
+        resolveOptionalToolBinary(toolNames: ["mp4muxer", "MP4Muxer"])
+    }
+
     private static func resolveToolBinary(toolName: String, versionMarker: String) -> URL? {
         var seen = Set<String>()
         var candidates: [URL] = []
@@ -109,10 +125,10 @@ actor BackendRunner {
             candidates.append(url)
         }
 
-        appendCandidate(AppPaths.runtimeDirectory.appendingPathComponent("bin/\(toolName)"))
         appendCandidate(Bundle.main.resourceURL?
             .appendingPathComponent("bin", isDirectory: true)
             .appendingPathComponent(toolName))
+        appendCandidate(AppPaths.runtimeBinDirectory.appendingPathComponent(toolName))
 
         for path in [
             "/opt/homebrew/bin/\(toolName)",
@@ -131,6 +147,47 @@ actor BackendRunner {
 
         for candidate in candidates where isWorkingToolBinary(candidate, versionMarker: versionMarker) {
             return candidate
+        }
+
+        for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate.path) {
+            return candidate
+        }
+        return nil
+    }
+
+    private static func resolveOptionalToolBinary(toolNames: [String]) -> URL? {
+        var seen = Set<String>()
+        var candidates: [URL] = []
+
+        func appendCandidate(_ url: URL?) {
+            guard let url else { return }
+            let path = url.path
+            guard !seen.contains(path) else { return }
+            seen.insert(path)
+            candidates.append(url)
+        }
+
+        if let firstName = toolNames.first {
+            appendCandidate(Bundle.main.resourceURL?
+                .appendingPathComponent("bin", isDirectory: true)
+                .appendingPathComponent(firstName))
+            appendCandidate(AppPaths.runtimeBinDirectory.appendingPathComponent(firstName))
+        }
+
+        for toolName in toolNames {
+            for path in [
+                "/opt/homebrew/bin/\(toolName)",
+                "/usr/local/bin/\(toolName)",
+                "/usr/bin/\(toolName)",
+                "/bin/\(toolName)"
+            ] {
+                appendCandidate(URL(fileURLWithPath: path))
+            }
+            if let envPath = ProcessInfo.processInfo.environment["PATH"] {
+                for dir in envPath.split(separator: ":") where !dir.isEmpty {
+                    appendCandidate(URL(fileURLWithPath: String(dir)).appendingPathComponent(toolName))
+                }
+            }
         }
 
         for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate.path) {

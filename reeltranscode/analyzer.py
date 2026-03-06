@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -27,8 +28,12 @@ class FFprobeAnalyzer:
         self.config = config
 
     def probe_command(self, path: Path) -> list[str]:
+        return self._probe_command_for_binary(self.config.tooling.ffprobe_bin, path)
+
+    @staticmethod
+    def _probe_command_for_binary(ffprobe_bin: str, path: Path) -> list[str]:
         return [
-            self.config.tooling.ffprobe_bin,
+            ffprobe_bin,
             "-v",
             "error",
             "-print_format",
@@ -39,44 +44,103 @@ class FFprobeAnalyzer:
             str(path),
         ]
 
+    def _ffprobe_candidates(self) -> list[str]:
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def append(candidate: str | None) -> None:
+            if not candidate:
+                return
+            normalized = str(candidate).strip()
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            candidates.append(normalized)
+
+        append(self.config.tooling.ffprobe_bin)
+
+        ffmpeg_bin = str(self.config.tooling.ffmpeg_bin).strip()
+        if "/" in ffmpeg_bin:
+            sibling = str(Path(ffmpeg_bin).expanduser().with_name("ffprobe"))
+            append(sibling)
+
+        append("/opt/homebrew/bin/ffprobe")
+        append("/usr/local/bin/ffprobe")
+        append("/usr/bin/ffprobe")
+        append(shutil.which("ffprobe"))
+        return candidates
+
+    @staticmethod
+    def _probe_failure_message(path: Path, errors: list[str]) -> str:
+        details = "; ".join(errors)
+        return f"ffprobe failed for {path}. attempts: {details}"
+
     def analyze(self, path: Path) -> tuple[MediaInfo, list[str]]:
-        command = self.probe_command(path)
-        LOGGER.debug("ffprobe command: %s", " ".join(command))
-        process = subprocess.run(
-            command,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if process.returncode != 0:
-            raise ProbeError(process.stderr.strip() or f"ffprobe failed for {path}")
+        errors: list[str] = []
+        for ffprobe_bin in self._ffprobe_candidates():
+            command = self._probe_command_for_binary(ffprobe_bin, path)
+            LOGGER.debug("ffprobe command: %s", " ".join(command))
+            try:
+                process = subprocess.run(
+                    command,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except OSError as exc:
+                errors.append(f"{ffprobe_bin}: {exc}")
+                continue
+            if process.returncode != 0:
+                stderr = process.stderr.strip() or process.stdout.strip() or f"exit code {process.returncode}"
+                errors.append(f"{ffprobe_bin}: {stderr}")
+                continue
 
-        payload = json.loads(process.stdout)
-        format_node = payload.get("format", {}) or {}
-        duration = format_node.get("duration")
-        duration_value = float(duration) if duration is not None else None
-        bit_rate = format_node.get("bit_rate")
-        bit_rate_value = int(bit_rate) if isinstance(bit_rate, str) and bit_rate.isdigit() else None
-        if isinstance(bit_rate, int):
-            bit_rate_value = bit_rate
-        size = format_node.get("size")
-        size_value = int(size) if isinstance(size, str) and size.isdigit() else None
+            try:
+                payload = json.loads(process.stdout)
+            except json.JSONDecodeError as exc:
+                errors.append(f"{ffprobe_bin}: invalid json output ({exc})")
+                continue
 
-        streams = [StreamInfo.from_probe(item) for item in payload.get("streams", [])]
-        media = MediaInfo(
-            path=path,
-            format_name=str(format_node.get("format_name", "")),
-            duration=duration_value,
-            bit_rate=bit_rate_value,
-            size=size_value,
-            streams=streams,
-            raw_probe=payload,
-        )
-        return media, command
+            if ffprobe_bin != self.config.tooling.ffprobe_bin:
+                LOGGER.warning(
+                    "Primary ffprobe failed, using fallback binary '%s' for %s",
+                    ffprobe_bin,
+                    path,
+                )
+                self.config.tooling.ffprobe_bin = ffprobe_bin
+
+            format_node = payload.get("format", {}) or {}
+            duration = format_node.get("duration")
+            duration_value = float(duration) if duration is not None else None
+            bit_rate = format_node.get("bit_rate")
+            bit_rate_value = int(bit_rate) if isinstance(bit_rate, str) and bit_rate.isdigit() else None
+            if isinstance(bit_rate, int):
+                bit_rate_value = bit_rate
+            size = format_node.get("size")
+            size_value = int(size) if isinstance(size, str) and size.isdigit() else None
+
+            streams = [StreamInfo.from_probe(item) for item in payload.get("streams", [])]
+            media = MediaInfo(
+                path=path,
+                format_name=str(format_node.get("format_name", "")),
+                duration=duration_value,
+                bit_rate=bit_rate_value,
+                size=size_value,
+                streams=streams,
+                raw_probe=payload,
+            )
+            return media, command
+
+        raise ProbeError(self._probe_failure_message(path, errors))
 
     @staticmethod
     def detect_dolby_vision(media: MediaInfo) -> tuple[bool, str | None]:
         for stream in media.video_streams:
+            if stream.dv_profile:
+                profile = stream.dv_profile
+                if profile.isdigit():
+                    profile = f"{profile}.0"
+                return True, profile
             for side_data in stream.side_data_list:
                 side_type = str(side_data.get("side_data_type", "")).lower()
                 if "dovi" in side_type or "dolby vision" in side_type:
@@ -121,6 +185,7 @@ class FFprobeAnalyzer:
                     "color_primaries": stream.color_primaries,
                     "color_transfer": stream.color_transfer,
                     "color_space": stream.color_space,
+                    "dv_profile": stream.dv_profile,
                     "language": (stream.language or "und").lower(),
                     "default": stream.disposition.default,
                     "forced": stream.disposition.forced,

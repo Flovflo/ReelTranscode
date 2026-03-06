@@ -14,6 +14,7 @@ from reeltranscode.models import (
     MediaInfo,
     Strategy,
 )
+from reeltranscode.tooling import ToolchainResolver
 from reeltranscode.utils import ensure_dir
 
 SUPPORTED_AUDIO = {"eac3", "ac3", "aac"}
@@ -29,6 +30,10 @@ class SubtitleExport:
 class CommandPlanner:
     def __init__(self, config: AppConfig):
         self.config = config
+        self.tooling = ToolchainResolver(config)
+
+    def preview_target_path(self, source: Path, source_root: Path | None) -> Path:
+        return self._build_target_path(source, source_root)
 
     def build(
         self,
@@ -54,6 +59,9 @@ class CommandPlanner:
                 notes=["No-op path selected"],
             )
 
+        if decision.use_dovi_muxer:
+            return self._build_dovi_muxer_plan(media, decision, source_root)
+
         ffmpeg = self.config.tooling.ffmpeg_bin
         cmd = [ffmpeg, "-hide_banner", "-nostdin", "-y", "-i", str(media.path), "-map", "0"]
 
@@ -63,7 +71,7 @@ class CommandPlanner:
             cmd.extend(["-map_chapters", "-1"])
 
         cmd.extend(self._video_args(media, decision, compatibility))
-        subtitle_args, subtitle_exports, subtitle_notes = self._subtitle_args(media, decision)
+        subtitle_args, subtitle_exports, subtitle_notes = self._subtitle_args(media, decision, target_path)
         cmd.extend(subtitle_args)
         notes.extend(subtitle_notes)
         cmd.extend(self._audio_args(media, decision))
@@ -101,6 +109,94 @@ class CommandPlanner:
                 )
             )
 
+        return ExecutionPlan(
+            source_path=media.path,
+            target_path=target_path,
+            temp_path=temp_path,
+            strategy=decision.strategy,
+            case_label=decision.case_label,
+            steps=steps,
+            external_subtitle_outputs=subtitle_sidecars,
+            notes=notes,
+        )
+
+    def _build_dovi_muxer_plan(
+        self,
+        media: MediaInfo,
+        decision: Decision,
+        source_root: Path | None,
+    ) -> ExecutionPlan:
+        caps = self.tooling.resolve_dolby_vision_mux_capabilities()
+        if not caps.available or not caps.dovi_muxer_bin:
+            missing = ", ".join(sorted(caps.missing_tools)) or "unknown"
+            raise RuntimeError(f"DoViMuxer toolchain unavailable: {missing}")
+
+        target_path = self._build_target_path(media.path, source_root)
+        temp_path = self._build_temp_path(media.path, target_path, hidden=False)
+        cmd = [caps.dovi_muxer_bin, str(temp_path), "-i", str(media.path), "-ffmpeg", caps.ffmpeg_bin]
+        notes = ["DoViMuxer Dolby Vision safe remux path selected"]
+        subtitle_sidecars: list[Path] = []
+        steps: list[CommandStep] = []
+        if caps.mp4box_bin:
+            cmd.extend(["-mp4box", caps.mp4box_bin])
+        if caps.mediainfo_bin:
+            cmd.extend(["-mediainfo", caps.mediainfo_bin])
+        if caps.mp4muxer_bin:
+            cmd.extend(["-mp4muxer", caps.mp4muxer_bin])
+        if not self.config.remux.keep_chapters:
+            cmd.append("--nochap")
+
+        cmd.extend(["-map", "0:v:0"])
+
+        output_audio_index = 0
+        for source_audio_index, stream in enumerate(media.audio_streams):
+            cmd.extend(["-map", f"0:a:{source_audio_index}"])
+            if meta := self._dovi_meta_arg("a", output_audio_index, stream.language, stream.title):
+                cmd.extend(["-meta", meta])
+            if stream.disposition.default:
+                cmd.extend(["-default", f"a:{output_audio_index}"])
+            output_audio_index += 1
+
+        output_sub_index = 0
+        for source_sub_index, stream in enumerate(media.subtitle_streams):
+            lang = (stream.language or "und").lower()
+            if stream.is_image_subtitle:
+                export_ext, export_codec = self._image_subtitle_export(stream.codec_name)
+                export = self._subtitle_export_path(target_path, source_sub_index, lang, export_ext)
+                subtitle_sidecars.append(export)
+                notes.append(f"Externalized image subtitle stream {source_sub_index} -> {export.name}")
+                steps.append(
+                    CommandStep(
+                        name="subtitle_export",
+                        command=[
+                            caps.ffmpeg_bin,
+                            "-hide_banner",
+                            "-nostdin",
+                            "-y",
+                            "-i",
+                            str(media.path),
+                            "-map",
+                            f"0:s:{source_sub_index}",
+                            "-c:s",
+                            export_codec,
+                            str(export),
+                        ],
+                        expected_outputs=[export],
+                    )
+                )
+                continue
+
+            cmd.extend(["-map", f"0:s:{source_sub_index}"])
+            if meta := self._dovi_meta_arg("s", output_sub_index, lang, stream.title):
+                cmd.extend(["-meta", meta])
+            if stream.disposition.default:
+                cmd.extend(["-default", f"s:{output_sub_index}"])
+            if stream.disposition.forced:
+                cmd.extend(["-forced", f"s:{output_sub_index}"])
+            output_sub_index += 1
+
+        cmd.append("-y")
+        steps.insert(0, CommandStep(name="dovi_muxer", command=cmd, expected_outputs=[temp_path]))
         return ExecutionPlan(
             source_path=media.path,
             target_path=target_path,
@@ -233,7 +329,12 @@ class CommandPlanner:
             )
         return args
 
-    def _subtitle_args(self, media: MediaInfo, decision: Decision) -> tuple[list[str], list[SubtitleExport], list[str]]:
+    def _subtitle_args(
+        self,
+        media: MediaInfo,
+        decision: Decision,
+        target_path: Path,
+    ) -> tuple[list[str], list[SubtitleExport], list[str]]:
         if not media.subtitle_streams:
             return ["-c:s", "copy"], [], []
 
@@ -251,13 +352,8 @@ class CommandPlanner:
             map_spec = f"0:s:{source_sub_index}"
             if stream.is_image_subtitle:
                 args.extend(["-map", f"-0:s:{source_sub_index}"])
-                ext = (
-                    "sup"
-                    if (stream.codec_name or "") == "hdmv_pgs_subtitle"
-                    else self.config.subtitles.external_subtitle_format
-                )
-                export = self._subtitle_export_path(media.path, source_sub_index, lang, ext)
-                codec = "copy" if ext == "sup" else self.config.subtitles.external_subtitle_format
+                ext, codec = self._image_subtitle_export(stream.codec_name)
+                export = self._subtitle_export_path(target_path, source_sub_index, lang, ext)
                 exports.append(SubtitleExport(map_spec=map_spec, output_path=export, codec=codec))
                 notes.append(f"Externalized image subtitle stream {source_sub_index} -> {export.name}")
                 continue
@@ -267,7 +363,7 @@ class CommandPlanner:
             else:
                 args.extend(["-map", f"-0:s:{source_sub_index}"])
                 export = self._subtitle_export_path(
-                    media.path,
+                    target_path,
                     source_sub_index,
                     lang,
                     self.config.subtitles.external_subtitle_format,
@@ -303,9 +399,10 @@ class CommandPlanner:
         rel_path = Path(relative).with_suffix(suffix)
         return (self.config.output.output_root / rel_path).resolve()
 
-    def _build_temp_path(self, source: Path, target_path: Path) -> Path:
+    def _build_temp_path(self, source: Path, target_path: Path, *, hidden: bool = True) -> Path:
         token = uuid.uuid4().hex[:10]
-        temp_name = f".{source.stem}.{token}.tmp{target_path.suffix}"
+        prefix = "." if hidden else ""
+        temp_name = f"{prefix}{source.stem}.{token}.tmp{target_path.suffix}"
         # Keep temp file on target filesystem to avoid cross-device moves on commit.
         try:
             ensure_dir(target_path.parent)
@@ -322,8 +419,26 @@ class CommandPlanner:
             return f".{preferred}"
         return ".mkv"
 
-    def _subtitle_export_path(self, source: Path, subtitle_index: int, lang: str, ext: str) -> Path:
-        return source.with_name(f"{source.stem}__stream_{subtitle_index}.{lang}.{ext}")
+    @staticmethod
+    def _dovi_meta_arg(track_type: str, track_index: int, language: str | None, title: str | None) -> str | None:
+        parts = [f"{track_type}:{track_index}"]
+        if language:
+            parts.append(f"lang={language.lower()}")
+        if title:
+            sanitized = title.replace(":", " - ").replace("\n", " ").replace('"', "'").strip()
+            if sanitized:
+                parts.append(f"name={sanitized}")
+        return ":".join(parts) if len(parts) > 1 else None
+
+    @staticmethod
+    def _image_subtitle_export(codec_name: str | None) -> tuple[str, str]:
+        codec = (codec_name or "").lower()
+        if codec == "hdmv_pgs_subtitle":
+            return "sup", "copy"
+        return "mks", "copy"
+
+    def _subtitle_export_path(self, target_path: Path, subtitle_index: int, lang: str, ext: str) -> Path:
+        return target_path.with_name(f"{target_path.stem}__stream_{subtitle_index}.{lang}.{ext}")
 
 
 def _fps(value: str | None) -> float | None:

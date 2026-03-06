@@ -15,6 +15,8 @@ ReelTranscode est une pipeline orientee Apple (Plex/Infuse/TV app) qui optimise 
   - tag MP4 HEVC par defaut: `hvc1`
   - `movflags +write_colr+faststart` pour meilleure preservation metadata couleur.
   - fallback audio AAC stereo ajoute automatiquement si absent en sortie MP4.
+- Voie Dolby Vision securisee via `DoViMuxer` quand le stack complet est disponible (`DoViMuxer` + `MP4Box` + `mediainfo` + `mp4muxer`).
+- Remplacement en place des fichiers optimise possible (Series/Films), en conservant l'arborescence des dossiers.
 
 ## Structure
 
@@ -89,9 +91,39 @@ Sorties:
 ## Notes Dolby Vision / HDR
 
 - ReelTranscode tente d'eviter le transcode video des qu'un remux/copy suffit.
-- Les chemins Dolby Vision fragiles restent traites de facon conservative selon la policy.
+- Pour les sources Dolby Vision fragiles, ReelTranscode a maintenant 2 comportements explicites:
+  - remux DV-safe vers MP4 via `DoViMuxer` si le stack complet est disponible et qu'aucun transcode video/audio n'est requis
+  - `DV_STRICT_SKIP` sinon, pour ne jamais produire un faux MP4 HDR10 a la place d'un vrai DV
 - Si un transcode video est necessaire sur media HDR/DV, la pipeline force HEVC Main10 (`p010le`) et conserve les tags couleur source quand possible.
 - Le tag HEVC MP4 cible est configurable via `video.hevc_tag` (`hvc1` par defaut, `hev1` optionnel).
+- `status --json` expose maintenant `capabilities.dv_mp4_safe_mux` et `capabilities.missing_tools`.
+
+### Tooling DV-safe embarque
+
+Le script `tools/collect_runtime_assets.sh` embarque automatiquement:
+
+- `ffmpeg`
+- `ffprobe`
+- `DoViMuxer`
+- `MP4Box`
+- `mediainfo`
+- `mp4muxer`
+
+Pour `MP4Box` et `mediainfo`, le script recupere les bottles Homebrew et rebundle aussi leurs `.dylib` runtime dans `Resources/lib`, pour enlever toute dependance a `/opt/homebrew`.
+
+Pour `mp4muxer`, le script compile un binaire macOS local depuis `DolbyLaboratories/dlb_mp4base` puis l'embarque dans l'app.
+
+Variables supportees pour overrider les sources de build:
+
+```bash
+DOVI_MUXER_BIN=/abs/path/DoViMuxer \
+MP4BOX_BIN=/abs/path/MP4Box \
+MEDIAINFO_BIN=/abs/path/mediainfo \
+MP4MUXER_BIN=/abs/path/mp4muxer \
+tools/collect_runtime_assets.sh
+```
+
+Le binaire upstream `DoViMuxer` actuellement embarque est toujours `osx-x64`. Il fonctionne sur Apple Silicon quand Rosetta est disponible, mais ce n'est pas encore un build `arm64` natif.
 
 ## Troubleshooting rapide
 

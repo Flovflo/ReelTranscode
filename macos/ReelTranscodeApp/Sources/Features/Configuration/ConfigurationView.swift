@@ -29,23 +29,16 @@ struct ConfigurationView: View {
             }
 
             Section("Output") {
-                HStack {
-                    Text("Optimized")
-                        .frame(width: 110, alignment: .leading)
-                    TextField("Output root", text: $model.config.outputRoot)
-                    Button("Browse") {
-                        if let picked = model.pickFolder() {
-                            model.config.outputRoot = picked
-                        }
-                    }
-                }
-                HStack {
-                    Text("Archive")
-                        .frame(width: 110, alignment: .leading)
-                    TextField("Archive root", text: $model.config.archiveRoot)
-                    Button("Browse") {
-                        if let picked = model.pickFolder() {
-                            model.config.archiveRoot = picked
+                Toggle("Replace original files in place (Series/Films)", isOn: $model.config.replaceOriginalsInPlace)
+                if !model.config.replaceOriginalsInPlace {
+                    HStack {
+                        Text("Optimized")
+                            .frame(width: 110, alignment: .leading)
+                        TextField("Output root", text: $model.config.outputRoot)
+                        Button("Browse") {
+                            if let picked = model.pickFolder() {
+                                model.config.outputRoot = picked
+                            }
                         }
                     }
                 }
@@ -61,19 +54,13 @@ struct ConfigurationView: View {
             }
 
             Section("Actions") {
-                HStack {
-                    Button("Save Config") {
-                        Task {
-                            await model.saveConfig()
-                            await model.validateConfig()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Button("Validate Only") {
-                        Task { await model.validateConfig() }
+                Button("Save") {
+                    Task {
+                        await model.saveConfig()
+                        await model.validateConfig()
                     }
                 }
+                .buttonStyle(.borderedProminent)
 
                 if !model.configValidationErrors.isEmpty {
                     ForEach(model.configValidationErrors) { err in

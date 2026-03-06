@@ -2,18 +2,19 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from typing import TypeVar
 
 from reeltranscode.config import RetryConfig
 
+T = TypeVar("T")
 
-def run_with_retry(fn: Callable[[], None], retry: RetryConfig) -> None:
+def run_with_retry(fn: Callable[[], T], retry: RetryConfig) -> T:
     attempt = 0
     delay = retry.backoff_initial_seconds
     while True:
         attempt += 1
         try:
-            fn()
-            return
+            return fn()
         except Exception:
             if attempt >= retry.max_attempts:
                 raise

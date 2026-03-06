@@ -17,6 +17,9 @@ targets:
       - path: Resources/bin
         type: folder
         buildPhase: resources
+      - path: Resources/lib
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reelfin.ReelTranscodeApp

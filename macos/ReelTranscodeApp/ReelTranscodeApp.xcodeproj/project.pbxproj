@@ -15,8 +15,10 @@
 		49C6D6CE43ED385931358AB1 /* LogReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BB301E821B96748BDED61FA /* LogReader.swift */; };
 		49EADBC9F701A0F4AEF0B731 /* ReelTranscodeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9B55C58352A77D2822BA22 /* ReelTranscodeApp.swift */; };
 		52206AA1810EAD5229D9091F /* ConfigurationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F991D078938E4A40AC3E00 /* ConfigurationView.swift */; };
+		615F63F8B004DA1DD6892A21 /* lib in Resources */ = {isa = PBXBuildFile; fileRef = 64D03342A82211FF7354E151 /* lib */; };
 		62677AD2E1699F6F8D266A07 /* AppPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13EE5A97AB819BE7C21A997 /* AppPaths.swift */; };
 		6A515774036499BF80452702 /* BackendRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23D8405BE026577C64C3F016 /* BackendRunner.swift */; };
+		8DC460798D00E839FECE9667 /* RuntimeInstallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14ADB5929C527AF18225C266 /* RuntimeInstallerTests.swift */; };
 		982D3A49063CC375B32D8214 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83EAF0EBA055623A5A1BCA65 /* RootView.swift */; };
 		9E18286B06C7205F9D616F63 /* JobsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F772F885F38377DDA62889C5 /* JobsView.swift */; };
 		A497C7745CA31EA3B22A24E8 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE01E0C877D14E0283730202 /* DashboardView.swift */; };
@@ -42,6 +44,7 @@
 /* Begin PBXFileReference section */
 		02A9FCD9EA6911731FB0DD8E /* RuntimeInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeInstaller.swift; sourceTree = "<group>"; };
 		0BB301E821B96748BDED61FA /* LogReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogReader.swift; sourceTree = "<group>"; };
+		14ADB5929C527AF18225C266 /* RuntimeInstallerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeInstallerTests.swift; sourceTree = "<group>"; };
 		1F22806314D4298E1F50C647 /* runtime */ = {isa = PBXFileReference; lastKnownFileType = folder; name = runtime; path = Resources/runtime; sourceTree = SOURCE_ROOT; };
 		23D8405BE026577C64C3F016 /* BackendRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendRunner.swift; sourceTree = "<group>"; };
 		2F06A46733C86AF9DB1EB95E /* LaunchdServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdServiceTests.swift; sourceTree = "<group>"; };
@@ -51,6 +54,7 @@
 		4840DF7ED3CD23BF321C0D88 /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
 		5C4CCD6F2BB1921A8CAE20DA /* LogsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogsView.swift; sourceTree = "<group>"; };
 		5F0EF1CC8374B9001F018EA2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		64D03342A82211FF7354E151 /* lib */ = {isa = PBXFileReference; lastKnownFileType = folder; name = lib; path = Resources/lib; sourceTree = SOURCE_ROOT; };
 		83EAF0EBA055623A5A1BCA65 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		8DC0C0CF0EF16D4456C793FF /* ReelTranscodeApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ReelTranscodeApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B518BDDA986E35D1F3012F11 /* APIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIModels.swift; sourceTree = "<group>"; };
@@ -87,6 +91,7 @@
 			isa = PBXGroup;
 			children = (
 				D8E470BC815AD31A0D647FCE /* bin */,
+				64D03342A82211FF7354E151 /* lib */,
 				1F22806314D4298E1F50C647 /* runtime */,
 				878E6F1CD21BC25AB8E9BD75 /* Sources */,
 				5AC28E6B0C8EFFCD97C780D7 /* Tests */,
@@ -113,6 +118,7 @@
 				5F0EF1CC8374B9001F018EA2 /* Info.plist */,
 				2F06A46733C86AF9DB1EB95E /* LaunchdServiceTests.swift */,
 				4625DC58BEEF8C91C2DB55C0 /* PerformanceProfileTests.swift */,
+				14ADB5929C527AF18225C266 /* RuntimeInstallerTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -265,6 +271,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EE610D1BB2FC8D107CED1475 /* bin in Resources */,
+				615F63F8B004DA1DD6892A21 /* lib in Resources */,
 				E830C756703292F7CA818C74 /* runtime in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -279,6 +286,7 @@
 				3BDD0749E569EA9653AF9AF9 /* APIModelsTests.swift in Sources */,
 				D7597F8A7E626603B2991D0F /* LaunchdServiceTests.swift in Sources */,
 				D522654E09986262EEE2BD12 /* PerformanceProfileTests.swift in Sources */,
+				8DC460798D00E839FECE9667 /* RuntimeInstallerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

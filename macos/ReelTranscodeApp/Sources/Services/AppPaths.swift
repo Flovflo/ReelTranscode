@@ -21,6 +21,14 @@ enum AppPaths {
         appSupportDirectory.appendingPathComponent("runtime", isDirectory: true)
     }
 
+    static var runtimeBinDirectory: URL {
+        runtimeDirectory.appendingPathComponent("bin", isDirectory: true)
+    }
+
+    static var runtimeLibDirectory: URL {
+        runtimeDirectory.appendingPathComponent("lib", isDirectory: true)
+    }
+
     static var configFileURL: URL {
         configDirectory.appendingPathComponent("reeltranscode.yaml")
     }

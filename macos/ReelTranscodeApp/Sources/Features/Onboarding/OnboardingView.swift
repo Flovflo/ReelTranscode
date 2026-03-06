@@ -9,7 +9,7 @@ struct OnboardingView: View {
             Text("Setup ReelTranscode")
                 .font(.largeTitle.weight(.semibold))
 
-            Text("Configure watch folders, output paths, and runtime profile for your first launch.")
+            Text("Configure watch folders and choose how optimized files replace originals.")
                 .foregroundStyle(.secondary)
 
             GroupBox("Watch Folders") {
@@ -42,24 +42,17 @@ struct OnboardingView: View {
 
             GroupBox("Output") {
                 VStack(spacing: 8) {
-                    HStack {
-                        Text("Optimized")
-                            .frame(width: 100, alignment: .leading)
-                        TextField("Output root", text: $model.config.outputRoot)
-                        Button("Browse") {
-                            if let picked = model.pickFolder() {
-                                model.config.outputRoot = picked
-                            }
-                        }
-                    }
+                    Toggle("Replace original files in place (Series/Films)", isOn: $model.config.replaceOriginalsInPlace)
 
-                    HStack {
-                        Text("Archive")
-                            .frame(width: 100, alignment: .leading)
-                        TextField("Archive root", text: $model.config.archiveRoot)
-                        Button("Browse") {
-                            if let picked = model.pickFolder() {
-                                model.config.archiveRoot = picked
+                    if !model.config.replaceOriginalsInPlace {
+                        HStack {
+                            Text("Optimized")
+                                .frame(width: 100, alignment: .leading)
+                            TextField("Output root", text: $model.config.outputRoot)
+                            Button("Browse") {
+                                if let picked = model.pickFolder() {
+                                    model.config.outputRoot = picked
+                                }
                             }
                         }
                     }

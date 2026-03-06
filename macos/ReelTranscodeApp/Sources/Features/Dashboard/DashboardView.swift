@@ -22,9 +22,14 @@ struct DashboardView: View {
                         Label(model.isServiceRunning ? "Running" : "Stopped", systemImage: model.isServiceRunning ? "checkmark.circle.fill" : "xmark.circle")
                             .foregroundStyle(model.isServiceRunning ? .green : .secondary)
                         Spacer()
-                        Button("Refresh service") {
-                            model.refreshLaunchdStatus()
+                        Button(model.isServiceRunning ? "Stop" : "Start") {
+                            if model.isServiceRunning {
+                                model.stopWatchService()
+                            } else {
+                                model.startWatchService()
+                            }
                         }
+                        .buttonStyle(.borderedProminent)
                     }
                     Text(model.serviceStatusText.isEmpty ? "No launchd status yet" : model.serviceStatusText)
                         .font(.system(.caption, design: .monospaced))
@@ -35,9 +40,7 @@ struct DashboardView: View {
 
                 GroupBox("Actions") {
                     HStack {
-                        Button("Run Batch") { Task { await model.runBatch() } }
-                        Button("Refresh Status") { Task { await model.refreshStatus() } }
-                        Button("Validate Config") { Task { await model.validateConfig() } }
+                        Button("Run Library Now") { Task { await model.runBatch() } }
                     }
                 }
 

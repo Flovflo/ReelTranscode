@@ -2,7 +2,7 @@ from pathlib import Path
 
 from reeltranscode.config import AppConfig
 from reeltranscode.decision_engine import DecisionEngine
-from reeltranscode.models import CaseLabel, MediaInfo, StreamInfo
+from reeltranscode.models import CaseLabel, MediaInfo, StreamInfo, Strategy
 
 
 def _media(path: str, format_name: str, streams: list[dict]) -> MediaInfo:
@@ -174,3 +174,130 @@ def test_mp4_hevc_hev1_requires_remux_for_hvc1():
     decision, _ = engine.decide(media)
     assert decision.case_label == CaseLabel.B
     assert decision.strategy.value == "remux_only"
+
+
+def test_dv_fragile_uses_dovi_muxer_when_toolchain_is_available(tmp_path: Path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ["DoViMuxer", "MP4Box", "mediainfo", "mp4muxer", "ffmpeg", "ffmpeg_dovi_compat"]:
+        path = bin_dir / name
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    cfg = AppConfig.from_dict(
+        {
+            "remux": {"preferred_container": "mp4"},
+            "tooling": {
+                "ffmpeg_bin": str(bin_dir / "ffmpeg"),
+                "dovi_muxer_bin": str(bin_dir / "DoViMuxer"),
+                "mp4box_bin": str(bin_dir / "MP4Box"),
+                "mediainfo_bin": str(bin_dir / "mediainfo"),
+                "mp4muxer_bin": str(bin_dir / "mp4muxer"),
+            },
+            "dolby_vision": {
+                "safe_profiles": ["8.1"],
+                "remux_dv_from_mkv_to_mp4_is_safe": False,
+                "fragile_fallback": "preserve_hdr10",
+            },
+        }
+    )
+    engine = DecisionEngine(cfg)
+    media = _media(
+        "SpiderVerse.mkv",
+        "matroska,webm",
+        [
+            _video_hevc_main10(dv=True, hdr10=True),
+            _audio(1, "eac3", channels=6, default=True),
+        ],
+    )
+
+    decision, _ = engine.decide(media)
+    assert decision.case_label == CaseLabel.F
+    assert decision.strategy == Strategy.REMUX_ONLY
+    assert decision.use_dovi_muxer is True
+    assert decision.dv_fallback_applied is False
+
+
+def test_dv_fragile_uses_dovi_muxer_with_subrip_subtitles(tmp_path: Path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ["DoViMuxer", "MP4Box", "mediainfo", "mp4muxer", "ffmpeg", "ffmpeg_dovi_compat"]:
+        path = bin_dir / name
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    cfg = AppConfig.from_dict(
+        {
+            "remux": {"preferred_container": "mp4"},
+            "tooling": {
+                "ffmpeg_bin": str(bin_dir / "ffmpeg"),
+                "dovi_muxer_bin": str(bin_dir / "DoViMuxer"),
+                "mp4box_bin": str(bin_dir / "MP4Box"),
+                "mediainfo_bin": str(bin_dir / "mediainfo"),
+                "mp4muxer_bin": str(bin_dir / "mp4muxer"),
+            },
+            "dolby_vision": {
+                "safe_profiles": ["8.1"],
+                "remux_dv_from_mkv_to_mp4_is_safe": False,
+                "fragile_fallback": "preserve_hdr10",
+            },
+        }
+    )
+    engine = DecisionEngine(cfg)
+    media = _media(
+        "SpiderVerse.mkv",
+        "matroska,webm",
+        [
+            _video_hevc_main10(dv=True, hdr10=True),
+            _audio(1, "eac3", channels=6, default=True),
+            _subtitle(2, "subrip"),
+        ],
+    )
+
+    decision, _ = engine.decide(media)
+    assert decision.case_label == CaseLabel.F
+    assert decision.strategy == Strategy.REMUX_ONLY
+    assert decision.use_dovi_muxer is True
+
+
+def test_dv_fragile_uses_dovi_muxer_with_pgs_when_externalization_is_enabled(tmp_path: Path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ["DoViMuxer", "MP4Box", "mediainfo", "mp4muxer", "ffmpeg", "ffmpeg_dovi_compat"]:
+        path = bin_dir / name
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    cfg = AppConfig.from_dict(
+        {
+            "remux": {"preferred_container": "mp4"},
+            "subtitles": {"mode": "convert_or_externalize", "ocr_image_subtitles": False},
+            "tooling": {
+                "ffmpeg_bin": str(bin_dir / "ffmpeg"),
+                "dovi_muxer_bin": str(bin_dir / "DoViMuxer"),
+                "mp4box_bin": str(bin_dir / "MP4Box"),
+                "mediainfo_bin": str(bin_dir / "mediainfo"),
+                "mp4muxer_bin": str(bin_dir / "mp4muxer"),
+            },
+            "dolby_vision": {
+                "safe_profiles": ["8.1"],
+                "remux_dv_from_mkv_to_mp4_is_safe": False,
+                "fragile_fallback": "preserve_hdr10",
+            },
+        }
+    )
+    engine = DecisionEngine(cfg)
+    media = _media(
+        "SpiderVerse.mkv",
+        "matroska,webm",
+        [
+            _video_hevc_main10(dv=True, hdr10=True),
+            _audio(1, "eac3", channels=6, default=True),
+            _subtitle(2, "hdmv_pgs_subtitle"),
+        ],
+    )
+
+    decision, _ = engine.decide(media)
+    assert decision.case_label == CaseLabel.F
+    assert decision.strategy == Strategy.REMUX_ONLY
+    assert decision.use_dovi_muxer is True

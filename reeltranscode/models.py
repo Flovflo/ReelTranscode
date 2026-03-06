@@ -72,6 +72,8 @@ class StreamInfo:
     color_space: str | None = None
     field_order: str | None = None
     side_data_list: list[dict[str, Any]] = field(default_factory=list)
+    dv_profile: str | None = None
+    dv_level: str | None = None
 
     @classmethod
     def from_probe(cls, raw: dict[str, Any]) -> "StreamInfo":
@@ -103,6 +105,8 @@ class StreamInfo:
             color_space=raw.get("color_space"),
             field_order=raw.get("field_order"),
             side_data_list=list(raw.get("side_data_list", []) or []),
+            dv_profile=_dv_field(raw, "dv_profile", "dovi_profile", "dolby_vision_profile"),
+            dv_level=_dv_field(raw, "dv_level", "dovi_level", "dolby_vision_level"),
         )
 
     @property
@@ -187,6 +191,7 @@ class Decision:
     dv_fallback_reason: str | None = None
     force_sdr: bool = False
     preserve_hdr10: bool = True
+    use_dovi_muxer: bool = False
 
 
 @dataclass(slots=True)
@@ -236,3 +241,14 @@ class JobReport:
     dv_fallback_reason: str | None
     error_class: str | None = None
     error_message: str | None = None
+
+
+def _dv_field(raw: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = raw.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None

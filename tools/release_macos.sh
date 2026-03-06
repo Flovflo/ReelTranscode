@@ -46,7 +46,7 @@ xcodebuild \
 cp -R "$ARCHIVE_PATH/Products/Applications/ReelTranscodeApp.app" "$APP_BUNDLE"
 
 # Sign embedded executables first, then app.
-find "$APP_BUNDLE/Contents/Resources" -type f \( -name "ffmpeg" -o -name "ffprobe" -o -name "ReelTranscodeCore" \) -print0 | while IFS= read -r -d '' file; do
+find "$APP_BUNDLE/Contents/Resources" -type f \( -path "*/bin/*" -o -name "ReelTranscodeCore" -o -name "*.dylib" \) -print0 | while IFS= read -r -d '' file; do
   codesign --force --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY" "$file"
 done
 codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY" "$APP_BUNDLE"

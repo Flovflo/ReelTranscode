@@ -122,5 +122,6 @@ def test_status_json_contract(tmp_path: Path, capsys):
         assert len(payload["latest_jobs"]) == 1
         assert payload["latest_jobs"][0]["job_id"] == job_id
         assert payload["paths"]["state_db"] == str(cfg.paths.state_db)
+        assert "capabilities" in payload
     finally:
         state.close()

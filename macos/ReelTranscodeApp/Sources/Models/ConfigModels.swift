@@ -32,6 +32,7 @@ enum PerformanceProfile: String, CaseIterable, Identifiable {
 
 struct ConfigDocument {
     var watchFolders: [String] = []
+    var replaceOriginalsInPlace: Bool = true
     var outputRoot: String = "/Volumes/Media-Optimized"
     var archiveRoot: String = "/Volumes/Media-Archive"
     var stateDB: String = AppPaths.appSupportDirectory.appendingPathComponent("state/reeltranscode.db").path
@@ -40,6 +41,10 @@ struct ConfigDocument {
     var tempDir: String = AppPaths.appSupportDirectory.appendingPathComponent("tmp").path
     var ffmpegBin: String = AppPaths.runtimeDirectory.appendingPathComponent("bin/ffmpeg").path
     var ffprobeBin: String = AppPaths.runtimeDirectory.appendingPathComponent("bin/ffprobe").path
+    var doviMuxerBin: String = ""
+    var mp4boxBin: String = ""
+    var mediainfoBin: String = ""
+    var mp4muxerBin: String = ""
     var profile: PerformanceProfile = .balanced
 
     mutating func apply(_ profile: PerformanceProfile) {
@@ -49,8 +54,15 @@ struct ConfigDocument {
     func toYAML() -> String {
         let concurrency = profile.appliedConcurrency()
         let retry = profile.appliedRetry()
+        let outputMode = replaceOriginalsInPlace ? "replace_original" : "keep_original"
 
         let watchFoldersYAML = watchFolders.map { "    - \($0)" }.joined(separator: "\n")
+        let optionalToolLines = [
+            doviMuxerBin.isEmpty ? nil : "  dovi_muxer_bin: \(doviMuxerBin)",
+            mp4boxBin.isEmpty ? nil : "  mp4box_bin: \(mp4boxBin)",
+            mediainfoBin.isEmpty ? nil : "  mediainfo_bin: \(mediainfoBin)",
+            mp4muxerBin.isEmpty ? nil : "  mp4muxer_bin: \(mp4muxerBin)"
+        ].compactMap { $0 }.joined(separator: "\n")
 
         return """
         dry_run: false
@@ -101,7 +113,7 @@ struct ConfigDocument {
           max_4k_fps: 60
         
         output:
-          mode: keep_original
+          mode: \(outputMode)
           output_root: \(outputRoot)
           archive_root: \(archiveRoot)
           overwrite: false
@@ -124,7 +136,7 @@ struct ConfigDocument {
         
         tooling:
           ffmpeg_bin: \(ffmpegBin)
-          ffprobe_bin: \(ffprobeBin)
+          ffprobe_bin: \(ffprobeBin)\(optionalToolLines.isEmpty ? "" : "\n\(optionalToolLines)")
         
         validation:
           verify_duration_tolerance_seconds: 2.0
@@ -146,6 +158,7 @@ struct ConfigDocument {
         }
 
         if let output = config["output"]?.objectValue {
+            doc.replaceOriginalsInPlace = output["mode"]?.stringValue == "replace_original"
             doc.outputRoot = output["output_root"]?.stringValue ?? doc.outputRoot
             doc.archiveRoot = output["archive_root"]?.stringValue ?? doc.archiveRoot
         }
@@ -160,6 +173,10 @@ struct ConfigDocument {
         if let tooling = config["tooling"]?.objectValue {
             doc.ffmpegBin = tooling["ffmpeg_bin"]?.stringValue ?? doc.ffmpegBin
             doc.ffprobeBin = tooling["ffprobe_bin"]?.stringValue ?? doc.ffprobeBin
+            doc.doviMuxerBin = tooling["dovi_muxer_bin"]?.stringValue ?? doc.doviMuxerBin
+            doc.mp4boxBin = tooling["mp4box_bin"]?.stringValue ?? doc.mp4boxBin
+            doc.mediainfoBin = tooling["mediainfo_bin"]?.stringValue ?? doc.mediainfoBin
+            doc.mp4muxerBin = tooling["mp4muxer_bin"]?.stringValue ?? doc.mp4muxerBin
         }
 
         if let concurrency = config["concurrency"]?.objectValue {

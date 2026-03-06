@@ -39,6 +39,11 @@ final class AppViewModel: ObservableObject {
             onboardingRequired = !FileManager.default.fileExists(atPath: AppPaths.configFileURL.path)
             if !onboardingRequired {
                 await loadConfigFromBackendExport()
+                do {
+                    try persistCurrentConfig()
+                } catch {
+                    // Keep app usable even if tooling binaries are temporarily unavailable.
+                }
                 await refreshStatus()
                 refreshLogs()
                 refreshLaunchdStatus()
@@ -118,6 +123,7 @@ final class AppViewModel: ObservableObject {
     func startWatchService() {
         do {
             try persistCurrentConfig()
+            try resetWatchLogsForNewSession()
 
             guard FileManager.default.fileExists(atPath: AppPaths.configFileURL.path) else {
                 throw NSError(
@@ -127,15 +133,17 @@ final class AppViewModel: ObservableObject {
                 )
             }
 
-            let executableURL = BackendRunner.appSupportEmbeddedExecutableURL()
             let resolvedExecutableURL: URL
-            if FileManager.default.isExecutableFile(atPath: executableURL.path) {
-                resolvedExecutableURL = executableURL
-            } else if let bundleExecutable = BackendRunner.bundleEmbeddedExecutableURL(),
-                      FileManager.default.isExecutableFile(atPath: bundleExecutable.path) {
+            if let bundleExecutable = BackendRunner.bundleEmbeddedExecutableURL(),
+               FileManager.default.isExecutableFile(atPath: bundleExecutable.path) {
                 resolvedExecutableURL = bundleExecutable
             } else {
-                throw BackendRunnerError.executableNotFound
+                let appSupportExecutable = BackendRunner.appSupportEmbeddedExecutableURL()
+                if FileManager.default.isExecutableFile(atPath: appSupportExecutable.path) {
+                    resolvedExecutableURL = appSupportExecutable
+                } else {
+                    throw BackendRunnerError.executableNotFound
+                }
             }
 
             try launchdService.installOrUpdateWatchAgent(
@@ -239,6 +247,10 @@ final class AppViewModel: ObservableObject {
         }
         config.ffmpegBin = ffmpegURL.path
         config.ffprobeBin = ffprobeURL.path
+        config.doviMuxerBin = BackendRunner.doviMuxerBinaryURL()?.path ?? ""
+        config.mp4boxBin = BackendRunner.mp4boxBinaryURL()?.path ?? ""
+        config.mediainfoBin = BackendRunner.mediainfoBinaryURL()?.path ?? ""
+        config.mp4muxerBin = BackendRunner.mp4muxerBinaryURL()?.path ?? ""
         try config.toYAML().write(to: AppPaths.configFileURL, atomically: true, encoding: .utf8)
     }
 
@@ -299,5 +311,19 @@ final class AppViewModel: ObservableObject {
         inAppWatchStderrHandle?.closeFile()
         inAppWatchStdoutHandle = nil
         inAppWatchStderrHandle = nil
+    }
+
+    private func resetWatchLogsForNewSession() throws {
+        try runtimeInstaller.prepareDirectories()
+        let files = [AppPaths.watchStdoutURL, AppPaths.watchStderrURL]
+        for file in files {
+            if FileManager.default.fileExists(atPath: file.path) {
+                let handle = try FileHandle(forWritingTo: file)
+                try handle.truncate(atOffset: 0)
+                try handle.close()
+            } else {
+                FileManager.default.createFile(atPath: file.path, contents: Data())
+            }
+        }
     }
 }

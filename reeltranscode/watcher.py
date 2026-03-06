@@ -20,6 +20,7 @@ LOGGER = logging.getLogger(__name__)
 class QueuedPath:
     path: Path
     source_root: Path
+    seeded: bool = False
 
 
 class _MediaEventHandler(FileSystemEventHandler):
@@ -52,7 +53,7 @@ class _MediaEventHandler(FileSystemEventHandler):
         if previous and (now - previous) < 5:
             return
         self._recent[key] = now
-        self.work_queue.put(QueuedPath(path=path, source_root=self.root))
+        self.work_queue.put(QueuedPath(path=path, source_root=self.root, seeded=False))
 
 
 class LibraryWatcher:
@@ -108,15 +109,16 @@ class LibraryWatcher:
                 continue
 
             try:
-                stable = wait_for_stable_file(
-                    path=item.path,
-                    stable_checks=self.cfg.watch.stable_checks,
-                    poll_interval_seconds=self.cfg.watch.poll_interval_seconds,
-                    max_wait_seconds=self.cfg.watch.stable_wait_seconds,
-                )
-                if not stable:
-                    LOGGER.warning("Timed out waiting for stable file: %s", item.path)
-                    continue
+                if not item.seeded:
+                    stable = wait_for_stable_file(
+                        path=item.path,
+                        stable_checks=self.cfg.watch.stable_checks,
+                        poll_interval_seconds=self.cfg.watch.poll_interval_seconds,
+                        max_wait_seconds=self.cfg.watch.stable_wait_seconds,
+                    )
+                    if not stable:
+                        LOGGER.warning("Timed out waiting for stable file: %s", item.path)
+                        continue
                 process_fn(item.path, item.source_root)
             except Exception:
                 LOGGER.exception("Watch worker failed for %s", item.path)
@@ -134,6 +136,6 @@ class LibraryWatcher:
                 continue
             if not is_media_file(path, self.cfg.watch.allowed_extensions):
                 continue
-            work_queue.put(QueuedPath(path=path, source_root=root))
+            work_queue.put(QueuedPath(path=path, source_root=root, seeded=True))
             queued += 1
         return queued

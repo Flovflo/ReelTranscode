@@ -100,6 +100,10 @@ class PathsConfig:
 class ToolingConfig:
     ffmpeg_bin: str = "ffmpeg"
     ffprobe_bin: str = "ffprobe"
+    dovi_muxer_bin: str | None = None
+    mp4box_bin: str | None = None
+    mediainfo_bin: str | None = None
+    mp4muxer_bin: str | None = None
 
 
 @dataclass(slots=True)
@@ -107,6 +111,7 @@ class ValidationConfig:
     verify_duration_tolerance_seconds: float = 2.0
     verify_stream_count_delta_max: int = 3
     run_post_ffprobe: bool = True
+    require_dv_preservation: bool = True
 
 
 @dataclass(slots=True)
@@ -140,6 +145,12 @@ class AppConfig:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "AppConfig":
+        def _optional_str(value: Any) -> str | None:
+            if value is None:
+                return None
+            text = str(value).strip()
+            return text or None
+
         def _path(v: str | None, default: Path) -> Path:
             if not v:
                 return default
@@ -237,6 +248,10 @@ class AppConfig:
         tooling = ToolingConfig(
             ffmpeg_bin=str(tooling_raw.get("ffmpeg_bin", "ffmpeg")),
             ffprobe_bin=str(tooling_raw.get("ffprobe_bin", "ffprobe")),
+            dovi_muxer_bin=_optional_str(tooling_raw.get("dovi_muxer_bin")),
+            mp4box_bin=_optional_str(tooling_raw.get("mp4box_bin")),
+            mediainfo_bin=_optional_str(tooling_raw.get("mediainfo_bin")),
+            mp4muxer_bin=_optional_str(tooling_raw.get("mp4muxer_bin")),
         )
 
         validation_raw = raw.get("validation", {})
@@ -244,6 +259,7 @@ class AppConfig:
             verify_duration_tolerance_seconds=float(validation_raw.get("verify_duration_tolerance_seconds", 2.0)),
             verify_stream_count_delta_max=int(validation_raw.get("verify_stream_count_delta_max", 3)),
             run_post_ffprobe=bool(validation_raw.get("run_post_ffprobe", True)),
+            require_dv_preservation=bool(validation_raw.get("require_dv_preservation", True)),
         )
 
         logging_raw = raw.get("logging", {})
@@ -330,6 +346,22 @@ class AppConfig:
                 _error("tooling.ffprobe_bin", f"binary not found: {ffprobe_path}")
             elif not os.access(ffprobe_path, os.X_OK):
                 _error("tooling.ffprobe_bin", f"not executable: {ffprobe_path}")
+
+        for field, value in [
+            ("tooling.dovi_muxer_bin", self.tooling.dovi_muxer_bin),
+            ("tooling.mp4box_bin", self.tooling.mp4box_bin),
+            ("tooling.mediainfo_bin", self.tooling.mediainfo_bin),
+            ("tooling.mp4muxer_bin", self.tooling.mp4muxer_bin),
+        ]:
+            if not value:
+                continue
+            bin_path = Path(value).expanduser()
+            if not bin_path.is_absolute():
+                continue
+            if not bin_path.exists():
+                _error(field, f"binary not found: {bin_path}")
+            elif not os.access(bin_path, os.X_OK):
+                _error(field, f"not executable: {bin_path}")
 
         if not self.watch.allowed_extensions:
             _error("watch.allowed_extensions", "must contain at least one extension")

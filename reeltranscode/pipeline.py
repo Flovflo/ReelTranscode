@@ -4,6 +4,7 @@ import logging
 import shutil
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from reeltranscode.analyzer import FFprobeAnalyzer, ProbeError
@@ -42,6 +43,8 @@ class PipelineProcessor:
         probe_command: list[str] = []
         validations: list[str] = []
         target_path: Path | None = None
+        temp_path: Path | None = None
+        external_subtitle_outputs: list[Path] = []
 
         stat = path.stat()
         device = stat.st_dev
@@ -94,8 +97,69 @@ class PipelineProcessor:
                 expected_safe_override = True
             else:
                 decision, compatibility = self.engine.decide(media)
+
+                if (
+                    self.config.validation.require_dv_preservation
+                    and compatibility.dv_present
+                    and decision.case_label.value == "F_DOLBY_VISION_FRAGILE"
+                    and not decision.use_dovi_muxer
+                ):
+                    target_path = self.planner.preview_target_path(path, source_root)
+                    quarantine_note = self._quarantine_incompatible_existing_target(
+                        source_media=media,
+                        decision=decision,
+                        target_path=target_path,
+                    )
+                    self.state_store.mark_job_started(
+                        job_id,
+                        path,
+                        target_path,
+                        "skip",
+                        "DV_STRICT_SKIP",
+                        stream_fp,
+                        metadata_fp,
+                    )
+                    status = JobStatus.SKIPPED
+                    strategy_override = "skip"
+                    case_label_override = "DV_STRICT_SKIP"
+                    reasons_override = [
+                        "Skipped: Dolby Vision preservation is required, but the current MP4 path is flagged as fragile."
+                    ]
+                    for reason in decision.reasons:
+                        if reason not in reasons_override:
+                            reasons_override.append(reason)
+                    if quarantine_note:
+                        reasons_override.append(quarantine_note)
+                    expected_safe_override = True
+                    return self._finalize_report(
+                        job_id=job_id,
+                        path=path,
+                        target_path=target_path,
+                        started_at=started_at,
+                        started_monotonic=started_monotonic,
+                        decision=decision,
+                        strategy_override=strategy_override,
+                        case_label_override=case_label_override,
+                        reasons_override=reasons_override,
+                        expected_safe_override=expected_safe_override,
+                        status=status,
+                        probe_command=probe_command,
+                        ffmpeg_commands=ffmpeg_commands,
+                        validations=validations,
+                        stream_fp=stream_fp,
+                        metadata_fp=metadata_fp,
+                        error_class=error_class,
+                        error_message=error_message,
+                        device=device,
+                        inode=inode,
+                        size=size,
+                        mtime_ns=mtime_ns,
+                    )
+
                 plan = self.planner.build(media, decision, compatibility, source_root)
                 target_path = plan.target_path
+                temp_path = plan.temp_path
+                external_subtitle_outputs = list(plan.external_subtitle_outputs)
 
                 if (
                     target_path
@@ -162,22 +226,38 @@ class PipelineProcessor:
                 else:
                     ffmpeg_commands = [step.command for step in plan.steps]
                     for step in plan.steps:
-                        run_with_retry(lambda cmd=step.command: self.runner.run(cmd), self.config.retry)
-
-                    # Commit temporary output to final target.
-                    if plan.temp_path and plan.target_path:
-                        ensure_parent(plan.target_path)
-                        atomic_replace(plan.temp_path, plan.target_path)
-                        self._post_success_source_handling(path, plan.target_path, source_root)
+                        result = run_with_retry(lambda cmd=step.command: self.runner.run(cmd), self.config.retry)
+                        missing_outputs = [output for output in step.expected_outputs if not output.exists()]
+                        if missing_outputs:
+                            missing_text = ", ".join(str(output) for output in missing_outputs)
+                            details = " | ".join(
+                                part
+                                for part in [result.stdout.strip(), result.stderr.strip()]
+                                if part
+                            )
+                            if details:
+                                raise RuntimeError(
+                                    f"Step '{step.name}' completed without expected outputs: {missing_text}. "
+                                    f"tool output: {details}"
+                                )
+                            raise RuntimeError(f"Step '{step.name}' completed without expected outputs: {missing_text}")
 
                     if plan.target_path and self.config.validation.run_post_ffprobe:
-                        output_media, _ = self.analyzer.analyze(plan.target_path)
-                        validation = self.validator.validate(media, output_media, decision)
+                        validation_path = plan.temp_path if plan.temp_path and plan.temp_path.exists() else plan.target_path
+                        output_media, _ = self.analyzer.analyze(validation_path)
+                        validation = self.validator.validate(media, output_media, decision, plan=plan)
                         if validation.ok:
                             validations.append("Validation passed")
                         else:
                             validations.extend(validation.reasons)
                             raise RuntimeError("Validation failed: " + "; ".join(validation.reasons))
+
+                    # Commit temporary output to final target only after successful validation.
+                    if plan.temp_path and plan.target_path:
+                        ensure_parent(plan.target_path)
+                        atomic_replace(plan.temp_path, plan.target_path)
+                        temp_path = None
+                        self._post_success_source_handling(path, plan.target_path, source_root)
                     status = JobStatus.SUCCESS
 
         except (ProbeError, CommandFailedError, RuntimeError, OSError) as exc:
@@ -185,6 +265,17 @@ class PipelineProcessor:
             error_class = exc.__class__.__name__
             error_message = str(exc)
             LOGGER.exception("Job failed for %s", path)
+            if temp_path and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    LOGGER.warning("Unable to remove temporary output after failure: %s", temp_path)
+            for subtitle_path in external_subtitle_outputs:
+                if subtitle_path.exists():
+                    try:
+                        subtitle_path.unlink()
+                    except OSError:
+                        LOGGER.warning("Unable to remove subtitle sidecar after failure: %s", subtitle_path)
         return self._finalize_report(
             job_id=job_id,
             path=path,
@@ -238,9 +329,16 @@ class PipelineProcessor:
         finished_at = now_utc_iso()
         duration_seconds = time.monotonic() - started_monotonic
 
-        strategy = decision.strategy.value if decision else (strategy_override or "analysis_failed")
-        case_label = decision.case_label.value if decision else (case_label_override or "UNKNOWN")
-        reasons = decision.reasons if decision else (reasons_override or ["Failed before decision stage"])
+        strategy = strategy_override or (decision.strategy.value if decision else "analysis_failed")
+        case_label = case_label_override or (decision.case_label.value if decision else "UNKNOWN")
+        reasons = reasons_override if reasons_override is not None else (
+            decision.reasons if decision else ["Failed before decision stage"]
+        )
+        expected_direct_play_safe = (
+            expected_safe_override
+            if expected_safe_override is not None
+            else (decision.expected_direct_play_safe if decision else False)
+        )
         report = JobReport(
             job_id=job_id,
             source_path=str(path),
@@ -254,7 +352,7 @@ class PipelineProcessor:
             reasons=reasons,
             ffprobe_command=probe_command,
             ffmpeg_commands=ffmpeg_commands,
-            expected_direct_play_safe=(decision.expected_direct_play_safe if decision else bool(expected_safe_override)),
+            expected_direct_play_safe=expected_direct_play_safe,
             validations=validations,
             stream_fingerprint=stream_fp,
             metadata_fingerprint=metadata_fp,
@@ -278,6 +376,42 @@ class PipelineProcessor:
                 job_id,
             )
         return report
+
+    def _quarantine_incompatible_existing_target(
+        self,
+        source_media,
+        decision,
+        target_path: Path | None,
+    ) -> str | None:
+        if target_path is None or not target_path.exists():
+            return None
+
+        try:
+            existing_media, _ = self.analyzer.analyze(target_path)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Unable to inspect existing target during DV strict skip: %s", exc)
+            return None
+
+        validation = self.validator.validate(source_media, existing_media, decision)
+        dv_loss = any("Dolby Vision lost" in reason for reason in validation.reasons)
+        if not dv_loss:
+            return None
+
+        quarantine_path = self._build_quarantine_path(target_path)
+        ensure_parent(quarantine_path)
+        shutil.move(str(target_path), str(quarantine_path))
+        LOGGER.warning(
+            "Quarantined stale target after DV strict skip: %s -> %s",
+            target_path,
+            quarantine_path,
+        )
+        return f"Existing incompatible output was quarantined: {quarantine_path}"
+
+    @staticmethod
+    def _build_quarantine_path(target_path: Path) -> Path:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        quarantine_dir = target_path.parent / "_quarantine"
+        return quarantine_dir / f"{target_path.stem}.dv-invalid-{stamp}{target_path.suffix}"
 
     def _post_success_source_handling(self, source: Path, target: Path, source_root: Path | None) -> None:
         mode = self.config.output.mode

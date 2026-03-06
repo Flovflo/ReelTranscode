@@ -15,6 +15,7 @@ from reeltranscode.pipeline import PipelineProcessor
 from reeltranscode.reporter import Reporter
 from reeltranscode.scanner import iter_media_files
 from reeltranscode.state_store import StateStore
+from reeltranscode.tooling import ToolchainResolver
 from reeltranscode.utils import setup_logging
 from reeltranscode.watcher import LibraryWatcher
 
@@ -117,7 +118,16 @@ def _run_watch(config: AppConfig, pipeline: PipelineProcessor, dry_run: bool) ->
     watcher = LibraryWatcher(config)
 
     def _process(path: Path, root: Path) -> None:
-        pipeline.process_path(path, root, dry_run_override=dry_run)
+        report = pipeline.process_path(path, root, dry_run_override=dry_run)
+        reason = "; ".join(report.reasons[:3]) if report.reasons else "-"
+        LOGGER.info(
+            "Watch processed: status=%s case=%s source=%s target=%s reason=%s",
+            report.status,
+            report.case_label,
+            report.source_path,
+            report.target_path or "-",
+            reason,
+        )
 
     watcher.run_forever(_process)
 
@@ -153,6 +163,7 @@ def _run_status(config: AppConfig, state: StateStore, limit: int, json_output: b
         "reports_dir": str(config.paths.reports_dir),
         "csv_summary": str(config.paths.csv_summary),
     }
+    payload["capabilities"] = ToolchainResolver(config).resolve_dolby_vision_mux_capabilities().as_json()
     if json_output:
         _emit_json(payload)
         return
@@ -162,6 +173,11 @@ def _run_status(config: AppConfig, state: StateStore, limit: int, json_output: b
         "Summary: "
         f"total={summary['total']} pending={summary['pending']} running={summary['running']} "
         f"success={summary['success']} failed={summary['failed']} skipped={summary['skipped']}"
+    )
+    dv_caps = payload["capabilities"]
+    print(
+        "Capabilities: "
+        f"dv_mp4_safe_mux={dv_caps['dv_mp4_safe_mux']} missing_tools={','.join(dv_caps['missing_tools']) or '-'}"
     )
     for job in payload["latest_jobs"]:
         print(

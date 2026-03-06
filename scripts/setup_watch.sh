@@ -124,7 +124,7 @@ video:
   max_4k_fps: 60
 
 output:
-  mode: keep_original
+  mode: replace_original
   output_root: $output_dir
   archive_root: $archive_dir
   overwrite: $overwrite

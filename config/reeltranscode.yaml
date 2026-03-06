@@ -50,7 +50,7 @@ video:
 
 output:
   # keep_original | archive_original | replace_original
-  mode: keep_original
+  mode: replace_original
   output_root: /Volumes/Media-Optimized
   archive_root: /Volumes/Media-Archive
   overwrite: false
