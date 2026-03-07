@@ -98,10 +98,18 @@ class _FakeEngine:
 
 
 class _FakePlanner:
-    def __init__(self, source_path: Path, target_path: Path, temp_path: Path):
+    def __init__(
+        self,
+        source_path: Path,
+        target_path: Path,
+        temp_path: Path,
+        *,
+        cleanup_paths: list[Path] | None = None,
+    ):
         self.source_path = source_path
         self.target_path = target_path
         self.temp_path = temp_path
+        self.cleanup_paths = list(cleanup_paths or [])
 
     def preview_target_path(self, _source: Path, _source_root: Path | None) -> Path:
         return self.target_path
@@ -114,6 +122,7 @@ class _FakePlanner:
             strategy=decision.strategy,
             case_label=decision.case_label,
             steps=[CommandStep(name="main_ffmpeg", command=["mock-ffmpeg", str(self.temp_path)], expected_outputs=[self.temp_path])],
+            cleanup_paths=list(self.cleanup_paths),
             notes=[],
         )
 
@@ -341,3 +350,72 @@ def test_pipeline_fails_when_step_does_not_create_expected_output(tmp_path: Path
     assert report.error_class == "RuntimeError"
     assert "expected outputs" in (report.error_message or "")
     assert not target.exists()
+
+
+def test_pipeline_removes_temp_and_wrapper_files_after_success(tmp_path: Path):
+    source = tmp_path / "watch" / "movie.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    target = tmp_path / "optimized" / "movie.mp4"
+    temp = tmp_path / "tmp" / ".movie.dv.tmp.mp4"
+    wrapper = tmp_path / "tmp" / ".movie.wrapper.sh"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+    cfg = AppConfig.from_dict(
+        {
+            "output": {
+                "mode": "keep_original",
+                "output_root": str(tmp_path / "optimized"),
+                "overwrite": True,
+            },
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+        }
+    )
+    state = StateStore(cfg.paths.state_db)
+    reporter = Reporter(cfg)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=reporter)
+
+    source_media = _media(source, "matroska,webm", has_dv=False, codec_tag=None)
+    output_media = _media(temp, "mov,mp4,m4a,3gp,3g2,mj2", has_dv=False, codec_tag="hvc1")
+    processor.analyzer = _FakeAnalyzer(source, temp, source_media, output_media)
+    decision = Decision(
+        strategy=Strategy.REMUX_ONLY,
+        case_label=CaseLabel.B,
+        reasons=["remux"],
+        expected_container="mp4",
+        expected_direct_play_safe=True,
+        preserve_hdr10=True,
+    )
+    compatibility = CompatibilityDetails(
+        container_ok=False,
+        video_ok=True,
+        audio_ok=True,
+        subtitle_ok=True,
+        dv_present=False,
+        dv_profile=None,
+        hdr10_present=False,
+        requires_container_change=True,
+        requires_audio_fix=False,
+        requires_subtitle_fix=False,
+        requires_video_transcode=False,
+        reasons=[],
+    )
+    processor.engine = _FakeEngine(decision, compatibility)
+    processor.planner = _FakePlanner(source, target, temp, cleanup_paths=[wrapper])
+    processor.runner = _FakeRunner()
+
+    try:
+        report = processor.process_path(source, source.parent, dry_run_override=False)
+    finally:
+        state.close()
+
+    assert report.status == "success"
+    assert target.exists()
+    assert not temp.exists()
+    assert not wrapper.exists()

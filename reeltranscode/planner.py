@@ -136,11 +136,11 @@ class CommandPlanner:
         cmd = [caps.dovi_muxer_bin, str(temp_path), "-i", str(media.path), "-ffmpeg", caps.ffmpeg_bin]
         notes = ["DoViMuxer Dolby Vision safe remux path selected"]
         subtitle_sidecars: list[Path] = []
-        mp4muxer_wrapper = self._build_mp4muxer_wrapper(media, target_path, caps.mp4muxer_bin)
+        mp4muxer_wrapper = self._build_mp4muxer_wrapper(media, caps.mp4muxer_bin)
         cleanup_paths = [mp4muxer_wrapper]
         steps: list[CommandStep] = []
         if caps.mp4box_bin:
-            mp4box_wrapper = self._build_mp4box_wrapper(media, target_path, caps.mp4box_bin)
+            mp4box_wrapper = self._build_mp4box_wrapper(media, caps.mp4box_bin)
             if mp4box_wrapper is not None:
                 cmd.extend(["-mp4box", str(mp4box_wrapper)])
                 cleanup_paths.append(mp4box_wrapper)
@@ -396,26 +396,17 @@ class CommandPlanner:
         token = uuid.uuid4().hex[:10]
         prefix = "." if hidden else ""
         temp_name = f"{prefix}{source.stem}.{token}.tmp{target_path.suffix}"
-        # Keep temp file on target filesystem to avoid cross-device moves on commit.
-        try:
-            ensure_dir(target_path.parent)
-            return (target_path.parent / temp_name).resolve()
-        except OSError:
-            ensure_dir(self.config.paths.temp_dir)
-            return (self.config.paths.temp_dir / temp_name).resolve()
+        ensure_dir(self.config.paths.temp_dir)
+        return (self.config.paths.temp_dir / temp_name).resolve()
 
-    def _build_intermediate_path(self, source: Path, target_path: Path, label: str, suffix: str) -> Path:
+    def _build_intermediate_path(self, source: Path, label: str, suffix: str) -> Path:
         token = uuid.uuid4().hex[:10]
         file_name = f".{source.stem}.{token}.{label}{suffix}"
-        try:
-            ensure_dir(target_path.parent)
-            return (target_path.parent / file_name).resolve()
-        except OSError:
-            ensure_dir(self.config.paths.temp_dir)
-            return (self.config.paths.temp_dir / file_name).resolve()
+        ensure_dir(self.config.paths.temp_dir)
+        return (self.config.paths.temp_dir / file_name).resolve()
 
-    def _build_mp4muxer_wrapper(self, media: MediaInfo, target_path: Path, mp4muxer_bin: str) -> Path:
-        wrapper_path = self._build_intermediate_path(media.path, target_path, "mp4muxer-fps-wrapper", ".sh")
+    def _build_mp4muxer_wrapper(self, media: MediaInfo, mp4muxer_bin: str) -> Path:
+        wrapper_path = self._build_intermediate_path(media.path, "mp4muxer-fps-wrapper", ".sh")
         fps_value = self._source_video_frame_rate(media)
         script = "\n".join(
             [
@@ -443,12 +434,12 @@ class CommandPlanner:
         wrapper_path.chmod(0o755)
         return wrapper_path
 
-    def _build_mp4box_wrapper(self, media: MediaInfo, target_path: Path, mp4box_bin: str) -> Path | None:
+    def _build_mp4box_wrapper(self, media: MediaInfo, mp4box_bin: str) -> Path | None:
         trim_specs = self._audio_trim_specs(media)
         if not trim_specs:
             return None
 
-        wrapper_path = self._build_intermediate_path(media.path, target_path, "mp4box-audio-trim-wrapper", ".sh")
+        wrapper_path = self._build_intermediate_path(media.path, "mp4box-audio-trim-wrapper", ".sh")
         script_lines = [
             "#!/bin/bash",
             "args=()",

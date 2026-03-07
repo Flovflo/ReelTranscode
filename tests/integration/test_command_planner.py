@@ -20,8 +20,14 @@ def _media(path: str, format_name: str, streams: list[dict]) -> MediaInfo:
     )
 
 
-def test_plan_for_sample1_keeps_video_copy():
-    cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4"}})
+def test_plan_for_sample1_keeps_video_copy(tmp_path: Path):
+    cfg = AppConfig.from_dict(
+        {
+            "remux": {"preferred_container": "mp4"},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+        }
+    )
     media = _media(
         "/Volumes/Media/Movies/Zootopia.2.2025.mkv",
         "matroska,webm",
@@ -68,6 +74,8 @@ def test_plan_for_sample1_keeps_video_copy():
     assert "-tag:v" in cmd
     assert cmd[cmd.index("-tag:v") + 1] == "hvc1"
     assert str(plan.target_path).endswith(".mp4")
+    assert plan.temp_path is not None
+    assert plan.temp_path.parent == (tmp_path / "tmp").resolve()
     assert plan.steps[0].cwd == plan.target_path.parent
 
 
@@ -389,6 +397,8 @@ def test_dovi_muxer_plan_uses_wrapper_to_force_video_frame_rate(tmp_path: Path):
     cfg = AppConfig.from_dict(
         {
             "remux": {"preferred_container": "mp4"},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
             "tooling": {
                 "ffmpeg_bin": str(bin_dir / "ffmpeg"),
                 "dovi_muxer_bin": str(bin_dir / "DoViMuxer"),
@@ -452,11 +462,13 @@ def test_dovi_muxer_plan_uses_wrapper_to_force_video_frame_rate(tmp_path: Path):
     assert cmd[cmd.index("-ffmpeg") + 1] == str(bin_dir / "ffmpeg_dovi_compat")
     assert cmd[1].endswith(".tmp.mp4")
     assert not Path(cmd[1]).name.startswith(".")
+    assert Path(cmd[1]).parent == (tmp_path / "tmp").resolve()
     assert "-mp4box" in cmd
     assert "-mediainfo" in cmd
     wrapper_path = Path(cmd[cmd.index("-mp4muxer") + 1])
     assert wrapper_path in plan.cleanup_paths
     assert wrapper_path.exists()
+    assert wrapper_path.parent == (tmp_path / "tmp").resolve()
     wrapper_text = wrapper_path.read_text(encoding="utf-8")
     assert "--input-video-frame-rate" in wrapper_text
     assert "24/1" in wrapper_text
@@ -481,6 +493,8 @@ def test_dovi_muxer_plan_trims_only_overlong_audio_tracks_with_mp4box_wrapper(tm
     cfg = AppConfig.from_dict(
         {
             "remux": {"preferred_container": "mp4"},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
             "tooling": {
                 "ffmpeg_bin": str(bin_dir / "ffmpeg"),
                 "dovi_muxer_bin": str(bin_dir / "DoViMuxer"),
@@ -542,6 +556,7 @@ def test_dovi_muxer_plan_trims_only_overlong_audio_tracks_with_mp4box_wrapper(tm
     mp4box_wrapper = Path(cmd[cmd.index("-mp4box") + 1])
     assert mp4box_wrapper in plan.cleanup_paths
     assert mp4box_wrapper.exists()
+    assert mp4box_wrapper.parent == (tmp_path / "tmp").resolve()
     wrapper_text = mp4box_wrapper.read_text(encoding="utf-8")
     assert str(bin_dir / "MP4Box") in wrapper_text
     assert "_Audio1." in wrapper_text
