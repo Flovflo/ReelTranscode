@@ -1,0 +1,252 @@
+name: Release macOS
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional tag to publish. Leave empty to only upload a workflow artifact."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref_name || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  release-macos:
+    name: Build and Release macOS DMG
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode 26
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          candidate=""
+          while IFS= read -r app; do
+            version="$(defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null || true)"
+            if [[ "$version" == 26* ]]; then
+              candidate="$app"
+              break
+            fi
+          done < <(find /Applications -maxdepth 1 -type d -name 'Xcode*.app' | sort -Vr)
+
+          if [[ -z "$candidate" ]]; then
+            echo "Xcode 26 is required for macOS 26 deployment." >&2
+            ls -1 /Applications | grep '^Xcode' || true
+            exit 1
+          fi
+
+          sudo xcode-select -switch "$candidate/Contents/Developer"
+          xcodebuild -version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install xcodegen if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+
+      - name: Cache packaging dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/evermeet-ffmpeg
+            .cache/mp4muxer
+            .cache/mp4muxer-src
+            ~/Library/Caches/Homebrew
+          key: macos-release-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'tools/**', 'macos/ReelTranscodeApp/project.yml') }}
+          restore-keys: |
+            macos-release-${{ runner.os }}-
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[test]' pyinstaller
+
+      - name: Run backend tests
+        run: pytest -q
+
+      - name: Regenerate Xcode project
+        run: xcodegen generate --spec macos/ReelTranscodeApp/project.yml
+
+      - name: Run macOS app build validation
+        run: xcodebuild -project macos/ReelTranscodeApp/ReelTranscodeApp.xcodeproj -scheme ReelTranscodeApp -destination 'generic/platform=macOS' build-for-testing
+
+      - name: Resolve release tag
+        id: release_tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag=""
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [[ -n "${{ github.event.inputs.release_tag || '' }}" ]]; then
+            tag="${{ github.event.inputs.release_tag }}"
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Detect signing configuration
+        id: signing
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$MACOS_CERTIFICATE_P12_BASE64" && -n "$MACOS_CERTIFICATE_PASSWORD" && -n "$APPLE_TEAM_ID" && -n "$APPLE_ID" && -n "$APPLE_APP_PASSWORD" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Signing secrets missing: building unsigned DMG." >&2
+          fi
+
+      - name: Import Developer ID certificate
+        if: steps.signing.outputs.enabled == 'true'
+        id: keychain
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          cert_path="$RUNNER_TEMP/developer-id.p12"
+          keychain_path="$RUNNER_TEMP/reeltranscode-signing.keychain-db"
+          keychain_password="$(uuidgen)"
+
+          CERT_PATH="$cert_path" python - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          Path(os.environ["CERT_PATH"]).write_bytes(
+              base64.b64decode(os.environ["MACOS_CERTIFICATE_P12_BASE64"])
+          )
+          PY
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$cert_path" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" login.keychain-db
+          security default-keychain -d user -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+
+          identity="$(security find-identity -v -p codesigning "$keychain_path" | awk -F '\"' '/Developer ID Application/ {print $2; exit}')"
+          if [[ -z "$identity" ]]; then
+            echo "Developer ID Application identity not found in imported certificate." >&2
+            exit 1
+          fi
+
+          echo "path=$keychain_path" >> "$GITHUB_OUTPUT"
+          echo "password=$keychain_password" >> "$GITHUB_OUTPUT"
+          echo "APPLE_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Build signed and notarized DMG
+        if: steps.signing.outputs.enabled == 'true'
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_SIGN_IDENTITY: ${{ env.APPLE_SIGN_IDENTITY }}
+        run: tools/release_macos.sh
+
+      - name: Build unsigned DMG
+        if: steps.signing.outputs.enabled != 'true'
+        run: tools/release_macos_local.sh
+
+      - name: Normalize release artifacts
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p release
+
+          dmg_path="$(find build -type f -name '*.dmg' | sort | tail -n 1)"
+          if [[ -z "$dmg_path" ]]; then
+            echo "No DMG artifact was produced." >&2
+            exit 1
+          fi
+
+          suffix="unsigned"
+          if [[ "${{ steps.signing.outputs.enabled }}" == "true" ]]; then
+            suffix="signed"
+          fi
+
+          artifact_name="ReelTranscode"
+          if [[ -n "${{ steps.release_tag.outputs.tag }}" ]]; then
+            artifact_name="${artifact_name}-${{ steps.release_tag.outputs.tag }}"
+          fi
+          artifact_name="${artifact_name}-macOS-${suffix}.dmg"
+
+          cp "$dmg_path" "release/$artifact_name"
+          shasum -a 256 "release/$artifact_name" > "release/$artifact_name.sha256"
+
+          echo "dmg=release/$artifact_name" >> "$GITHUB_OUTPUT"
+          echo "sha=release/$artifact_name.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReelTranscode-release-dmg
+          path: |
+            ${{ steps.artifact.outputs.dmg }}
+            ${{ steps.artifact.outputs.sha }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release
+        if: steps.release_tag.outputs.tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
+          RELEASE_DMG: ${{ steps.artifact.outputs.dmg }}
+          RELEASE_SHA: ${{ steps.artifact.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$RELEASE_DMG" "$RELEASE_SHA" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$RELEASE_DMG" "$RELEASE_SHA" \
+              --target "$GITHUB_SHA" \
+              --title "ReelTranscode $RELEASE_TAG" \
+              --generate-notes
+          fi
+
+      - name: Cleanup signing keychain
+        if: always() && steps.keychain.outputs.path != ''
+        shell: bash
+        run: security delete-keychain "${{ steps.keychain.outputs.path }}"

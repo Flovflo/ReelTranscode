@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-validation:
+    name: macOS Validation
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          candidate=""
+          while IFS= read -r app; do
+            version="$(defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null || true)"
+            if [[ "$version" == 26* ]]; then
+              candidate="$app"
+              break
+            fi
+          done < <(find /Applications -maxdepth 1 -type d -name 'Xcode*.app' | sort -Vr)
+
+          if [[ -z "$candidate" ]]; then
+            echo "Xcode 26 is required for macOS 26 deployment." >&2
+            ls -1 /Applications | grep '^Xcode' || true
+            exit 1
+          fi
+
+          sudo xcode-select -switch "$candidate/Contents/Developer"
+          xcodebuild -version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install xcodegen if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+
+      - name: Cache packaging dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/evermeet-ffmpeg
+            .cache/mp4muxer
+            .cache/mp4muxer-src
+            ~/Library/Caches/Homebrew
+          key: macos-packaging-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'tools/**', 'macos/ReelTranscodeApp/project.yml') }}
+          restore-keys: |
+            macos-packaging-${{ runner.os }}-
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[test]' pyinstaller
+
+      - name: Run backend tests
+        run: pytest -q
+
+      - name: Regenerate Xcode project
+        run: xcodegen generate --spec macos/ReelTranscodeApp/project.yml
+
+      - name: Run macOS app build validation
+        run: xcodebuild -project macos/ReelTranscodeApp/ReelTranscodeApp.xcodeproj -scheme ReelTranscodeApp -destination 'generic/platform=macOS' build-for-testing
+
+      - name: Build unsigned macOS DMG
+        run: tools/release_macos_local.sh
+
+      - name: Generate checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          shasum -a 256 build/macos-local/ReelTranscode-macOS26-local.dmg > build/macos-local/ReelTranscode-macOS26-local.dmg.sha256
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReelTranscode-macOS-dmg
+          path: |
+            build/macos-local/ReelTranscode-macOS26-local.dmg
+            build/macos-local/ReelTranscode-macOS26-local.dmg.sha256
+          if-no-files-found: error
+          retention-days: 14

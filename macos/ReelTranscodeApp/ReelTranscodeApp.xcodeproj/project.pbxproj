@@ -1,0 +1,556 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		12F4B0B72C927C0B667EE045 /* LaunchdService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB2A9F9D2988060C74757540 /* LaunchdService.swift */; };
+		17098CA3AA7AAA53DCED0D22 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5768324FCB1895D79AD304D /* OnboardingView.swift */; };
+		17BF160E860A725A616A5443 /* APIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B518BDDA986E35D1F3012F11 /* APIModels.swift */; };
+		311F64EFEE901267508C1565 /* ConfigModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D93F0736B8CCDD939A462AA /* ConfigModels.swift */; };
+		3BDD0749E569EA9653AF9AF9 /* APIModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB8A0105D023904665068E38 /* APIModelsTests.swift */; };
+		49C6D6CE43ED385931358AB1 /* LogReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BB301E821B96748BDED61FA /* LogReader.swift */; };
+		49EADBC9F701A0F4AEF0B731 /* ReelTranscodeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9B55C58352A77D2822BA22 /* ReelTranscodeApp.swift */; };
+		52206AA1810EAD5229D9091F /* ConfigurationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F991D078938E4A40AC3E00 /* ConfigurationView.swift */; };
+		615F63F8B004DA1DD6892A21 /* lib in Resources */ = {isa = PBXBuildFile; fileRef = 64D03342A82211FF7354E151 /* lib */; };
+		62677AD2E1699F6F8D266A07 /* AppPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13EE5A97AB819BE7C21A997 /* AppPaths.swift */; };
+		6A515774036499BF80452702 /* BackendRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23D8405BE026577C64C3F016 /* BackendRunner.swift */; };
+		8DC460798D00E839FECE9667 /* RuntimeInstallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14ADB5929C527AF18225C266 /* RuntimeInstallerTests.swift */; };
+		982D3A49063CC375B32D8214 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83EAF0EBA055623A5A1BCA65 /* RootView.swift */; };
+		9E18286B06C7205F9D616F63 /* JobsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F772F885F38377DDA62889C5 /* JobsView.swift */; };
+		A330E9786EE9A498C6042A67 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 55222D8A295A335DBC70CB11 /* Assets.xcassets */; };
+		A497C7745CA31EA3B22A24E8 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE01E0C877D14E0283730202 /* DashboardView.swift */; };
+		BA590BCAE28812E840F0784F /* AppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4840DF7ED3CD23BF321C0D88 /* AppViewModel.swift */; };
+		BEA91763F3F501DC235B33F8 /* LogsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C4CCD6F2BB1921A8CAE20DA /* LogsView.swift */; };
+		C72C79117FE850FB3F851261 /* RuntimeInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02A9FCD9EA6911731FB0DD8E /* RuntimeInstaller.swift */; };
+		D522654E09986262EEE2BD12 /* PerformanceProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4625DC58BEEF8C91C2DB55C0 /* PerformanceProfileTests.swift */; };
+		D7597F8A7E626603B2991D0F /* LaunchdServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F06A46733C86AF9DB1EB95E /* LaunchdServiceTests.swift */; };
+		E830C756703292F7CA818C74 /* runtime in Resources */ = {isa = PBXBuildFile; fileRef = 1F22806314D4298E1F50C647 /* runtime */; };
+		EE610D1BB2FC8D107CED1475 /* bin in Resources */ = {isa = PBXBuildFile; fileRef = D8E470BC815AD31A0D647FCE /* bin */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		03914E699AB9C379290583D2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5AB2F80A8921D5718E342A02 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4696686284AD9426C5CF7A8C;
+			remoteInfo = ReelTranscodeApp;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		02A9FCD9EA6911731FB0DD8E /* RuntimeInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeInstaller.swift; sourceTree = "<group>"; };
+		0BB301E821B96748BDED61FA /* LogReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogReader.swift; sourceTree = "<group>"; };
+		14ADB5929C527AF18225C266 /* RuntimeInstallerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeInstallerTests.swift; sourceTree = "<group>"; };
+		1F22806314D4298E1F50C647 /* runtime */ = {isa = PBXFileReference; lastKnownFileType = folder; name = runtime; path = Resources/runtime; sourceTree = SOURCE_ROOT; };
+		23D8405BE026577C64C3F016 /* BackendRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendRunner.swift; sourceTree = "<group>"; };
+		2F06A46733C86AF9DB1EB95E /* LaunchdServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdServiceTests.swift; sourceTree = "<group>"; };
+		381CA806869EE34967BF844C /* ReelTranscodeAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ReelTranscodeAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		3D93F0736B8CCDD939A462AA /* ConfigModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigModels.swift; sourceTree = "<group>"; };
+		4625DC58BEEF8C91C2DB55C0 /* PerformanceProfileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceProfileTests.swift; sourceTree = "<group>"; };
+		4840DF7ED3CD23BF321C0D88 /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
+		55222D8A295A335DBC70CB11 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		5C4CCD6F2BB1921A8CAE20DA /* LogsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogsView.swift; sourceTree = "<group>"; };
+		5F0EF1CC8374B9001F018EA2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		64D03342A82211FF7354E151 /* lib */ = {isa = PBXFileReference; lastKnownFileType = folder; name = lib; path = Resources/lib; sourceTree = SOURCE_ROOT; };
+		83EAF0EBA055623A5A1BCA65 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		8DC0C0CF0EF16D4456C793FF /* ReelTranscodeApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ReelTranscodeApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B518BDDA986E35D1F3012F11 /* APIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIModels.swift; sourceTree = "<group>"; };
+		B5768324FCB1895D79AD304D /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		BB8A0105D023904665068E38 /* APIModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIModelsTests.swift; sourceTree = "<group>"; };
+		BD9B55C58352A77D2822BA22 /* ReelTranscodeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelTranscodeApp.swift; sourceTree = "<group>"; };
+		D13EE5A97AB819BE7C21A997 /* AppPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPaths.swift; sourceTree = "<group>"; };
+		D4F991D078938E4A40AC3E00 /* ConfigurationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationView.swift; sourceTree = "<group>"; };
+		D8E470BC815AD31A0D647FCE /* bin */ = {isa = PBXFileReference; lastKnownFileType = folder; name = bin; path = Resources/bin; sourceTree = SOURCE_ROOT; };
+		EB2A9F9D2988060C74757540 /* LaunchdService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdService.swift; sourceTree = "<group>"; };
+		EE01E0C877D14E0283730202 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
+		F772F885F38377DDA62889C5 /* JobsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobsView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		07E2BBDA03C422E7B30D4F48 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				B518BDDA986E35D1F3012F11 /* APIModels.swift */,
+				3D93F0736B8CCDD939A462AA /* ConfigModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		21F69026BAB8F1635DC410EC /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				B5768324FCB1895D79AD304D /* OnboardingView.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
+		2C8B6D5BF1FBF0CBD84542D6 = {
+			isa = PBXGroup;
+			children = (
+				D8E470BC815AD31A0D647FCE /* bin */,
+				64D03342A82211FF7354E151 /* lib */,
+				1F22806314D4298E1F50C647 /* runtime */,
+				878E6F1CD21BC25AB8E9BD75 /* Sources */,
+				5AC28E6B0C8EFFCD97C780D7 /* Tests */,
+				F9E25FB7726C2D27E0148028 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		330AFB81B898C5AFD5204D1C /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				D13EE5A97AB819BE7C21A997 /* AppPaths.swift */,
+				23D8405BE026577C64C3F016 /* BackendRunner.swift */,
+				EB2A9F9D2988060C74757540 /* LaunchdService.swift */,
+				0BB301E821B96748BDED61FA /* LogReader.swift */,
+				02A9FCD9EA6911731FB0DD8E /* RuntimeInstaller.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		5AC28E6B0C8EFFCD97C780D7 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				BB8A0105D023904665068E38 /* APIModelsTests.swift */,
+				5F0EF1CC8374B9001F018EA2 /* Info.plist */,
+				2F06A46733C86AF9DB1EB95E /* LaunchdServiceTests.swift */,
+				4625DC58BEEF8C91C2DB55C0 /* PerformanceProfileTests.swift */,
+				14ADB5929C527AF18225C266 /* RuntimeInstallerTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		7607D639BDC4B1BA656EE7B5 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				4840DF7ED3CD23BF321C0D88 /* AppViewModel.swift */,
+				BD9B55C58352A77D2822BA22 /* ReelTranscodeApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		878E6F1CD21BC25AB8E9BD75 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				55222D8A295A335DBC70CB11 /* Assets.xcassets */,
+				7607D639BDC4B1BA656EE7B5 /* App */,
+				AF6441C799EAD5EF9EBD4161 /* Features */,
+				07E2BBDA03C422E7B30D4F48 /* Models */,
+				330AFB81B898C5AFD5204D1C /* Services */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		A9A285416D7149265BFCC49C /* Logs */ = {
+			isa = PBXGroup;
+			children = (
+				5C4CCD6F2BB1921A8CAE20DA /* LogsView.swift */,
+			);
+			path = Logs;
+			sourceTree = "<group>";
+		};
+		AF6441C799EAD5EF9EBD4161 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				83EAF0EBA055623A5A1BCA65 /* RootView.swift */,
+				FE43B9855F62011B03189B6B /* Configuration */,
+				DB2D800B8C92D31C1831C681 /* Dashboard */,
+				B5A6DE6D73C272F2E6E7F9FF /* Jobs */,
+				A9A285416D7149265BFCC49C /* Logs */,
+				21F69026BAB8F1635DC410EC /* Onboarding */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		B5A6DE6D73C272F2E6E7F9FF /* Jobs */ = {
+			isa = PBXGroup;
+			children = (
+				F772F885F38377DDA62889C5 /* JobsView.swift */,
+			);
+			path = Jobs;
+			sourceTree = "<group>";
+		};
+		DB2D800B8C92D31C1831C681 /* Dashboard */ = {
+			isa = PBXGroup;
+			children = (
+				EE01E0C877D14E0283730202 /* DashboardView.swift */,
+			);
+			path = Dashboard;
+			sourceTree = "<group>";
+		};
+		F9E25FB7726C2D27E0148028 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				8DC0C0CF0EF16D4456C793FF /* ReelTranscodeApp.app */,
+				381CA806869EE34967BF844C /* ReelTranscodeAppTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		FE43B9855F62011B03189B6B /* Configuration */ = {
+			isa = PBXGroup;
+			children = (
+				D4F991D078938E4A40AC3E00 /* ConfigurationView.swift */,
+			);
+			path = Configuration;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		4696686284AD9426C5CF7A8C /* ReelTranscodeApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5586F7A70CCC0B695D42F83A /* Build configuration list for PBXNativeTarget "ReelTranscodeApp" */;
+			buildPhases = (
+				8577A8F6B75044E74E07E3A6 /* Sources */,
+				4D43E8FC6B620A56D0836CA9 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ReelTranscodeApp;
+			packageProductDependencies = (
+			);
+			productName = ReelTranscodeApp;
+			productReference = 8DC0C0CF0EF16D4456C793FF /* ReelTranscodeApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+		7D61BB73131DA08C0C932B2D /* ReelTranscodeAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 70E71AFC1DC44F3F3602A5E3 /* Build configuration list for PBXNativeTarget "ReelTranscodeAppTests" */;
+			buildPhases = (
+				1DE2C7C7CF9822E806EBF7A7 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				42486DB66CB754968C400B02 /* PBXTargetDependency */,
+			);
+			name = ReelTranscodeAppTests;
+			packageProductDependencies = (
+			);
+			productName = ReelTranscodeAppTests;
+			productReference = 381CA806869EE34967BF844C /* ReelTranscodeAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		5AB2F80A8921D5718E342A02 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+			};
+			buildConfigurationList = B87F6B883DE905F81E692B8B /* Build configuration list for PBXProject "ReelTranscodeApp" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 2C8B6D5BF1FBF0CBD84542D6;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				4696686284AD9426C5CF7A8C /* ReelTranscodeApp */,
+				7D61BB73131DA08C0C932B2D /* ReelTranscodeAppTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		4D43E8FC6B620A56D0836CA9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A330E9786EE9A498C6042A67 /* Assets.xcassets in Resources */,
+				EE610D1BB2FC8D107CED1475 /* bin in Resources */,
+				615F63F8B004DA1DD6892A21 /* lib in Resources */,
+				E830C756703292F7CA818C74 /* runtime in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1DE2C7C7CF9822E806EBF7A7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3BDD0749E569EA9653AF9AF9 /* APIModelsTests.swift in Sources */,
+				D7597F8A7E626603B2991D0F /* LaunchdServiceTests.swift in Sources */,
+				D522654E09986262EEE2BD12 /* PerformanceProfileTests.swift in Sources */,
+				8DC460798D00E839FECE9667 /* RuntimeInstallerTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8577A8F6B75044E74E07E3A6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				17BF160E860A725A616A5443 /* APIModels.swift in Sources */,
+				62677AD2E1699F6F8D266A07 /* AppPaths.swift in Sources */,
+				BA590BCAE28812E840F0784F /* AppViewModel.swift in Sources */,
+				6A515774036499BF80452702 /* BackendRunner.swift in Sources */,
+				311F64EFEE901267508C1565 /* ConfigModels.swift in Sources */,
+				52206AA1810EAD5229D9091F /* ConfigurationView.swift in Sources */,
+				A497C7745CA31EA3B22A24E8 /* DashboardView.swift in Sources */,
+				9E18286B06C7205F9D616F63 /* JobsView.swift in Sources */,
+				12F4B0B72C927C0B667EE045 /* LaunchdService.swift in Sources */,
+				49C6D6CE43ED385931358AB1 /* LogReader.swift in Sources */,
+				BEA91763F3F501DC235B33F8 /* LogsView.swift in Sources */,
+				17098CA3AA7AAA53DCED0D22 /* OnboardingView.swift in Sources */,
+				49EADBC9F701A0F4AEF0B731 /* ReelTranscodeApp.swift in Sources */,
+				982D3A49063CC375B32D8214 /* RootView.swift in Sources */,
+				C72C79117FE850FB3F851261 /* RuntimeInstaller.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		42486DB66CB754968C400B02 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 4696686284AD9426C5CF7A8C /* ReelTranscodeApp */;
+			targetProxy = 03914E699AB9C379290583D2 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		24EAE9D0962F8D5BB550E024 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Tests/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ReelTranscodeApp.app/Contents/MacOS/ReelTranscodeApp";
+			};
+			name = Release;
+		};
+		2A881EC01077708CA3FDFD7F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Tests/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ReelTranscodeApp.app/Contents/MacOS/ReelTranscodeApp";
+			};
+			name = Debug;
+		};
+		55E1916118BBBCCA731DAE95 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		6D438450A47B36D5ABF613EB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A578F2ACAD1EE9515D757408 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.reelfin.ReelTranscodeApp;
+				PRODUCT_NAME = ReelTranscodeApp;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		B81C5F37820B9EE9F77CC289 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.reelfin.ReelTranscodeApp;
+				PRODUCT_NAME = ReelTranscodeApp;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5586F7A70CCC0B695D42F83A /* Build configuration list for PBXNativeTarget "ReelTranscodeApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B81C5F37820B9EE9F77CC289 /* Debug */,
+				A578F2ACAD1EE9515D757408 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		70E71AFC1DC44F3F3602A5E3 /* Build configuration list for PBXNativeTarget "ReelTranscodeAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2A881EC01077708CA3FDFD7F /* Debug */,
+				24EAE9D0962F8D5BB550E024 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B87F6B883DE905F81E692B8B /* Build configuration list for PBXProject "ReelTranscodeApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				55E1916118BBBCCA731DAE95 /* Debug */,
+				6D438450A47B36D5ABF613EB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 5AB2F80A8921D5718E342A02 /* Project object */;
+}

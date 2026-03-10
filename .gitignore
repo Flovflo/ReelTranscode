@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtualenv and build
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Test/cache
+.cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.profraw
+
+# Runtime artifacts
+reports/*.json
+reports/*.csv
+reports/*.log
+optimized/
+state/
+tmp/
+
+# macOS
+.DS_Store
+
+# Local packaging artifacts
+ReelTranscodeCore.spec

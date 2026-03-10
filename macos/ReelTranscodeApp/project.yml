@@ -1,0 +1,42 @@
+name: ReelTranscodeApp
+options:
+  minimumXcodeGenVersion: 2.38.0
+configs:
+  Debug: debug
+  Release: release
+targets:
+  ReelTranscodeApp:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources
+      - path: Resources/runtime
+        type: folder
+        buildPhase: resources
+      - path: Resources/bin
+        type: folder
+        buildPhase: resources
+      - path: Resources/lib
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.reelfin.ReelTranscodeApp
+        PRODUCT_NAME: ReelTranscodeApp
+        SWIFT_VERSION: 6.0
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Info.plist
+        ENABLE_HARDENED_RUNTIME: YES
+  ReelTranscodeAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests
+    dependencies:
+      - target: ReelTranscodeApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Tests/Info.plist
