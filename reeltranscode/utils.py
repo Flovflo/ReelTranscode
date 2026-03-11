@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import shutil
@@ -98,7 +99,7 @@ def atomic_replace(src: Path, dst: Path) -> None:
     try:
         os.replace(src, dst)
     except OSError as exc:
-        if exc.errno != os.EXDEV:
+        if exc.errno != errno.EXDEV:
             raise
         # Cross-device replace is not atomic; fallback to move to support external volumes.
         shutil.move(str(src), str(dst))
