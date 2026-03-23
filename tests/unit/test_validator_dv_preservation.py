@@ -136,6 +136,37 @@ def test_validator_accepts_output_when_dolby_vision_is_preserved():
     assert any("Dolby Vision preserved via mediainfo" in note for note in result.notes)
 
 
+def test_validator_accepts_dvh1_tag_when_dolby_vision_is_preserved():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(Path("/tmp/source.mkv"), "matroska,webm", has_dv=True, codec_tag=None)
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="dvh1",
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General", "CodecID_Compatible": "isom/dby1/iso2/mp41"},
+                    {
+                        "@type": "Video",
+                        "HDR_Format": "Dolby Vision / SMPTE ST 2086",
+                        "HDR_Format_Profile": "dvhe.08",
+                        "HDR_Format_Compatibility": "HDR10 / HDR10",
+                        "CodecID": "dvh1",
+                    },
+                ]
+            }
+        },
+    )
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("HEVC codec tag mismatch" in reason for reason in result.reasons)
+
+
 def test_validator_validates_mp4_text_subtitles():
     cfg = AppConfig.from_dict({})
     validator = OutputValidator(cfg)

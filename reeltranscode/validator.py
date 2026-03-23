@@ -35,16 +35,23 @@ class OutputValidator:
         if not audio_ok:
             reasons.extend(audio_reasons)
 
+        source_dv = FFprobeAnalyzer.inspect_dolby_vision(source)
+        output_dv = FFprobeAnalyzer.inspect_dolby_vision(output)
+
         if self.config.remux.preferred_container == "mp4":
             video = output.primary_video
             if video and (video.codec_name or "").lower() == "hevc":
                 codec_tag = (video.codec_tag_string or "").lower()
                 expected = self.config.video.hevc_tag.lower()
-                if codec_tag != expected:
-                    reasons.append(f"HEVC codec tag mismatch: expected {expected}, got {codec_tag or 'unknown'}")
+                accepted_tags = {expected}
+                if output_dv.present:
+                    accepted_tags.update({"dvh1", "dvhe"})
+                if codec_tag not in accepted_tags:
+                    accepted = ", ".join(sorted(accepted_tags))
+                    reasons.append(
+                        f"HEVC codec tag mismatch: expected one of [{accepted}], got {codec_tag or 'unknown'}"
+                    )
 
-        source_dv = FFprobeAnalyzer.inspect_dolby_vision(source)
-        output_dv = FFprobeAnalyzer.inspect_dolby_vision(output)
         if self.config.validation.require_dv_preservation and source_dv.present:
             source_desc = _dv_description(source_dv)
             if not output_dv.present:

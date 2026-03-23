@@ -677,7 +677,9 @@ class CommandPlanner:
         normalized = dv.profile.strip().lower()
         if not normalized:
             return None
-        return normalized
+        if normalized.startswith("f"):
+            return normalized
+        return f"f{normalized}"
 
     def _build_mp4muxer_wrapper(self, media: MediaInfo, mp4muxer_bin: str, workspace_dir: Path) -> Path:
         wrapper_path = (workspace_dir / "mp4muxer-fps-wrapper.sh").resolve()
