@@ -78,7 +78,7 @@ final class AppViewModel: ObservableObject {
     func refreshStatus() async {
         do {
             let response: StatusResponse = try await backendRunner.runJSON(
-                arguments: ["--config", AppPaths.configFileURL.path, "status", "--json", "--limit", "100"],
+                arguments: ["--config", AppPaths.configFileURL.path, "status", "--json", "--limit", "250"],
                 as: StatusResponse.self
             )
             status = response

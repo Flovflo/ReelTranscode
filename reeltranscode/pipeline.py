@@ -240,6 +240,8 @@ class PipelineProcessor:
                             f"Generated {len(plan.ocr_subtitle_tasks)} OCR subtitle track(s) for Apple-native MP4 output"
                         )
                     for step in plan.steps:
+                        if step.cwd is not None:
+                            step.cwd.mkdir(parents=True, exist_ok=True)
                         result = run_with_retry(
                             lambda cmd=step.command, cwd=step.cwd: self.runner.run(cmd, cwd=cwd),
                             self.config.retry,

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import queue
 import threading
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from reeltranscode.config import AppConfig
 from reeltranscode.scanner import iter_media_files
-from reeltranscode.watcher import LibraryWatcher, QueuedPath
+from reeltranscode.watcher import LibraryWatcher, QueuedPath, _MediaEventHandler
 
 
 def test_seed_existing_files_recursive(tmp_path):
@@ -169,3 +170,30 @@ def test_scanner_skips_managed_output_and_temp_paths(tmp_path):
     files = iter_media_files(cfg)
 
     assert files == [(source_media, root)]
+
+
+def test_watcher_dedupes_seeded_file_against_immediate_filesystem_event(tmp_path):
+    root = tmp_path / "watch"
+    root.mkdir(parents=True)
+    media = root / "Show" / "s1" / "episode.mkv"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"data")
+
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {
+                "folders": [str(root)],
+                "recursive": True,
+                "allowed_extensions": [".mkv"],
+            }
+        }
+    )
+    watcher = LibraryWatcher(cfg)
+    work_queue: queue.Queue[QueuedPath] = queue.Queue()
+    handler = _MediaEventHandler(cfg, root, work_queue, watcher)
+
+    queued = watcher._seed_existing_files(root, work_queue)  # noqa: SLF001 - tested behavior
+    handler.on_modified(SimpleNamespace(src_path=str(media), is_directory=False))
+
+    assert queued == 1
+    assert work_queue.qsize() == 1

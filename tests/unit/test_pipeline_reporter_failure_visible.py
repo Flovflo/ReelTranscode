@@ -16,6 +16,7 @@ from reeltranscode.models import (
     Strategy,
 )
 from reeltranscode.pipeline import PipelineProcessor
+from reeltranscode.reporter import Reporter
 from reeltranscode.state_store import StateStore
 
 
@@ -120,6 +121,14 @@ class _FakeRunner:
         return CommandResult(command=command, return_code=0, stdout="", stderr="")
 
 
+class _AssertingRunner:
+    def run(self, command: list[str], cwd: Path | None = None):
+        if cwd is None or not cwd.exists():
+            raise AssertionError(f"Expected existing cwd, got {cwd}")
+        Path(command[-1]).write_bytes(b"fake-mp4")
+        return CommandResult(command=command, return_code=0, stdout="", stderr="")
+
+
 class _BrokenReporter:
     def write_job_report(self, _report):
         raise OSError(28, "No space left on device")
@@ -189,6 +198,70 @@ def test_pipeline_marks_job_failed_when_report_write_fails(tmp_path: Path):
     assert report.status == "failed"
     assert report.error_class == "OSError"
     assert snapshot["summary"]["failed"] == 1
+
+
+def test_pipeline_creates_missing_nested_target_directory_before_running_ffmpeg(tmp_path: Path):
+    source = tmp_path / "watch" / "Show" / "s1" / "episode.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    target = tmp_path / "optimized" / "Show" / "s1" / "episode.mp4"
+    temp = target.parent / ".episode.tmp.mp4"
+
+    cfg = AppConfig.from_dict(
+        {
+            "output": {
+                "mode": "keep_original",
+                "output_root": str(tmp_path / "optimized"),
+                "overwrite": True,
+            },
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+        }
+    )
+    state = StateStore(cfg.paths.state_db)
+    reporter = Reporter(cfg)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=reporter)
+
+    source_media = _media(source, "matroska,webm", codec_tag=None)
+    output_media = _media(temp, "mov,mp4,m4a,3gp,3g2,mj2", codec_tag="hvc1")
+    processor.analyzer = _FakeAnalyzer(source, temp, source_media, output_media)
+    processor.engine = _FakeEngine(
+        Decision(
+            strategy=Strategy.REMUX_ONLY,
+            case_label=CaseLabel.B,
+            reasons=["remux"],
+            expected_container="mp4",
+            expected_direct_play_safe=True,
+        ),
+        CompatibilityDetails(
+            container_ok=False,
+            video_ok=True,
+            audio_ok=True,
+            subtitle_ok=True,
+            dv_present=False,
+            dv_profile=None,
+            hdr10_present=False,
+            requires_container_change=True,
+            requires_audio_fix=False,
+            requires_subtitle_fix=False,
+            requires_video_transcode=False,
+            reasons=[],
+        ),
+    )
+    processor.planner = _FakePlanner(source, target, temp)
+    processor.runner = _AssertingRunner()
+
+    try:
+        report = processor.process_path(source, source.parents[2], dry_run_override=False)
+    finally:
+        state.close()
+
+    assert report.status == "success"
+    assert target.exists()
 
 
 def test_pipeline_uses_temp_path_volume_for_capacity_check_when_workspace_is_absent(

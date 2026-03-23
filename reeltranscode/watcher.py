@@ -24,10 +24,17 @@ class QueuedPath:
 
 
 class _MediaEventHandler(FileSystemEventHandler):
-    def __init__(self, cfg: AppConfig, root: Path, work_queue: queue.Queue[QueuedPath]):
+    def __init__(
+        self,
+        cfg: AppConfig,
+        root: Path,
+        work_queue: queue.Queue[QueuedPath],
+        watcher: "LibraryWatcher",
+    ):
         self.cfg = cfg
         self.root = root
         self.work_queue = work_queue
+        self.watcher = watcher
         self._recent: dict[str, float] = {}
 
     def on_created(self, event: FileSystemEvent) -> None:
@@ -55,13 +62,15 @@ class _MediaEventHandler(FileSystemEventHandler):
         if previous and (now - previous) < 5:
             return
         self._recent[key] = now
-        self.work_queue.put(QueuedPath(path=path, source_root=self.root, seeded=False))
+        self.watcher._enqueue_once(self.work_queue, QueuedPath(path=path, source_root=self.root, seeded=False))
 
 
 class LibraryWatcher:
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
         self._stop_event = threading.Event()
+        self._queued_paths: set[Path] = set()
+        self._queued_paths_lock = threading.Lock()
 
     def run_forever(self, process_fn) -> None:
         if not self.cfg.watch.folders:
@@ -74,7 +83,7 @@ class LibraryWatcher:
             if self.cfg.is_excluded_from_watch(root):
                 LOGGER.warning("Skipping watch folder because it overlaps a managed path: %s", root)
                 continue
-            handler = _MediaEventHandler(self.cfg, root, work_queue)
+            handler = _MediaEventHandler(self.cfg, root, work_queue, self)
             observer = Observer()
             observer.schedule(handler, str(root), recursive=self.cfg.watch.recursive)
             observer.start()
@@ -128,6 +137,7 @@ class LibraryWatcher:
             except Exception:
                 LOGGER.exception("Watch worker failed for %s", item.path)
             finally:
+                self._mark_finished(item.path)
                 work_queue.task_done()
 
     def _seed_existing_files(self, root: Path, work_queue: queue.Queue[QueuedPath]) -> int:
@@ -143,6 +153,20 @@ class LibraryWatcher:
                 continue
             if not is_media_file(path, self.cfg.watch.allowed_extensions):
                 continue
-            work_queue.put(QueuedPath(path=path, source_root=root, seeded=True))
-            queued += 1
+            if self._enqueue_once(work_queue, QueuedPath(path=path, source_root=root, seeded=True)):
+                queued += 1
         return queued
+
+    def _enqueue_once(self, work_queue: queue.Queue[QueuedPath], item: QueuedPath) -> bool:
+        resolved = item.path.resolve()
+        with self._queued_paths_lock:
+            if resolved in self._queued_paths:
+                return False
+            self._queued_paths.add(resolved)
+        work_queue.put(item)
+        return True
+
+    def _mark_finished(self, path: Path) -> None:
+        resolved = path.resolve()
+        with self._queued_paths_lock:
+            self._queued_paths.discard(resolved)
