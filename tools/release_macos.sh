@@ -46,12 +46,7 @@ cp -R "$ARCHIVE_PATH/Products/Applications/ReelTranscodeApp.app" "$APP_BUNDLE"
 
 "$ROOT_DIR/tools/collect_runtime_assets.sh" "$APP_BUNDLE/Contents"
 "$ROOT_DIR/tools/smoke_test_packaged_backend.sh" "$APP_BUNDLE"
-
-# Sign embedded executables first, then app.
-find "$APP_BUNDLE/Contents/Resources" -type f \( -path "*/bin/*" -o -name "ReelTranscodeCore" -o -name "*.dylib" \) -print0 | while IFS= read -r -d '' file; do
-  codesign --force --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY" "$file"
-done
-codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY" "$APP_BUNDLE"
+"$ROOT_DIR/tools/sign_app_bundle.sh" "$APP_BUNDLE" "$APPLE_SIGN_IDENTITY" --timestamp
 
 hdiutil create -volname "ReelTranscode" -srcfolder "$APP_BUNDLE" -ov -format UDZO "$DMG_PATH"
 
