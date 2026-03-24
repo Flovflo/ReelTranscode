@@ -7,7 +7,13 @@ from unittest.mock import patch
 
 from reeltranscode.config import AppConfig
 from reeltranscode.scanner import iter_media_files
+from reeltranscode.state_store import StateStore
 from reeltranscode.watcher import LibraryWatcher, QueuedPath, _MediaEventHandler
+
+
+def _make_watcher(cfg: AppConfig, tmp_path) -> tuple[LibraryWatcher, StateStore]:  # noqa: ANN001
+    state = StateStore(tmp_path / "state.db")
+    return LibraryWatcher(cfg, state), state
 
 
 def test_seed_existing_files_recursive(tmp_path):
@@ -27,15 +33,18 @@ def test_seed_existing_files_recursive(tmp_path):
             }
         }
     )
-    watcher = LibraryWatcher(cfg)
+    watcher, state = _make_watcher(cfg, tmp_path)
     work_queue: queue.Queue = queue.Queue()
 
-    queued = watcher._seed_existing_files(root, work_queue)  # noqa: SLF001 - tested behavior
+    try:
+        queued = watcher._seed_existing_files(root, work_queue)  # noqa: SLF001 - tested behavior
 
-    assert queued == 1
-    item = work_queue.get_nowait()
-    assert item.path == media_file
-    assert item.seeded is True
+        assert queued == 1
+        item = work_queue.get_nowait()
+        assert item.path == media_file
+        assert item.seeded is True
+    finally:
+        state.close()
 
 
 def test_seed_existing_files_non_recursive(tmp_path):
@@ -56,15 +65,18 @@ def test_seed_existing_files_non_recursive(tmp_path):
             }
         }
     )
-    watcher = LibraryWatcher(cfg)
+    watcher, state = _make_watcher(cfg, tmp_path)
     work_queue: queue.Queue = queue.Queue()
 
-    queued = watcher._seed_existing_files(root, work_queue)  # noqa: SLF001 - tested behavior
+    try:
+        queued = watcher._seed_existing_files(root, work_queue)  # noqa: SLF001 - tested behavior
 
-    assert queued == 1
-    item = work_queue.get_nowait()
-    assert item.path == top_media
-    assert item.seeded is True
+        assert queued == 1
+        item = work_queue.get_nowait()
+        assert item.path == top_media
+        assert item.seeded is True
+    finally:
+        state.close()
 
 
 def test_worker_skips_stability_wait_for_seeded_items(tmp_path):
@@ -74,21 +86,24 @@ def test_worker_skips_stability_wait_for_seeded_items(tmp_path):
     media.write_bytes(b"data")
 
     cfg = AppConfig.from_dict({"watch": {"folders": [str(root)]}})
-    watcher = LibraryWatcher(cfg)
+    watcher, state = _make_watcher(cfg, tmp_path)
     work_queue: queue.Queue[QueuedPath] = queue.Queue()
     work_queue.put(QueuedPath(path=media, source_root=root, seeded=True))
     processed: list[tuple[str, str]] = []
 
-    def process_fn(path, source_root):  # noqa: ANN001
-        processed.append((str(path), str(source_root)))
-        watcher.stop()
+    try:
+        def process_fn(path, source_root):  # noqa: ANN001
+            processed.append((str(path), str(source_root)))
+            watcher.stop()
 
-    with patch("reeltranscode.watcher.wait_for_stable_file", side_effect=AssertionError("must not be called")):
-        worker = threading.Thread(target=watcher._worker, args=(work_queue, process_fn), daemon=True)  # noqa: SLF001
-        worker.start()
-        worker.join(timeout=2)
+        with patch("reeltranscode.watcher.wait_for_stable_file", side_effect=AssertionError("must not be called")):
+            worker = threading.Thread(target=watcher._worker, args=(work_queue, process_fn), daemon=True)  # noqa: SLF001
+            worker.start()
+            worker.join(timeout=2)
 
-    assert processed == [(str(media), str(root))]
+        assert processed == [(str(media), str(root))]
+    finally:
+        state.close()
 
 
 def test_worker_waits_for_non_seeded_items(tmp_path):
@@ -98,22 +113,25 @@ def test_worker_waits_for_non_seeded_items(tmp_path):
     media.write_bytes(b"data")
 
     cfg = AppConfig.from_dict({"watch": {"folders": [str(root)]}})
-    watcher = LibraryWatcher(cfg)
+    watcher, state = _make_watcher(cfg, tmp_path)
     work_queue: queue.Queue[QueuedPath] = queue.Queue()
     work_queue.put(QueuedPath(path=media, source_root=root, seeded=False))
     processed: list[tuple[str, str]] = []
 
-    def process_fn(path, source_root):  # noqa: ANN001
-        processed.append((str(path), str(source_root)))
-        watcher.stop()
+    try:
+        def process_fn(path, source_root):  # noqa: ANN001
+            processed.append((str(path), str(source_root)))
+            watcher.stop()
 
-    with patch("reeltranscode.watcher.wait_for_stable_file", return_value=True) as wait_mock:
-        worker = threading.Thread(target=watcher._worker, args=(work_queue, process_fn), daemon=True)  # noqa: SLF001
-        worker.start()
-        worker.join(timeout=2)
+        with patch("reeltranscode.watcher.wait_for_stable_file", return_value=True) as wait_mock:
+            worker = threading.Thread(target=watcher._worker, args=(work_queue, process_fn), daemon=True)  # noqa: SLF001
+            worker.start()
+            worker.join(timeout=2)
 
-    wait_mock.assert_called_once()
-    assert processed == [(str(media), str(root))]
+        wait_mock.assert_called_once()
+        assert processed == [(str(media), str(root))]
+    finally:
+        state.close()
 
 
 def test_seed_existing_files_skips_managed_output_and_temp_paths(tmp_path):
@@ -136,14 +154,17 @@ def test_seed_existing_files_skips_managed_output_and_temp_paths(tmp_path):
             "paths": {"temp_dir": str(temp_dir)},
         }
     )
-    watcher = LibraryWatcher(cfg)
+    watcher, state = _make_watcher(cfg, tmp_path)
     work_queue: queue.Queue = queue.Queue()
 
-    queued = watcher._seed_existing_files(root, work_queue)  # noqa: SLF001 - tested behavior
+    try:
+        queued = watcher._seed_existing_files(root, work_queue)  # noqa: SLF001 - tested behavior
 
-    assert queued == 1
-    item = work_queue.get_nowait()
-    assert item.path == source_media
+        assert queued == 1
+        item = work_queue.get_nowait()
+        assert item.path == source_media
+    finally:
+        state.close()
 
 
 def test_scanner_skips_managed_output_and_temp_paths(tmp_path):
@@ -188,12 +209,15 @@ def test_watcher_dedupes_seeded_file_against_immediate_filesystem_event(tmp_path
             }
         }
     )
-    watcher = LibraryWatcher(cfg)
+    watcher, state = _make_watcher(cfg, tmp_path)
     work_queue: queue.Queue[QueuedPath] = queue.Queue()
     handler = _MediaEventHandler(cfg, root, work_queue, watcher)
 
-    queued = watcher._seed_existing_files(root, work_queue)  # noqa: SLF001 - tested behavior
-    handler.on_modified(SimpleNamespace(src_path=str(media), is_directory=False))
+    try:
+        queued = watcher._seed_existing_files(root, work_queue)  # noqa: SLF001 - tested behavior
+        handler.on_modified(SimpleNamespace(src_path=str(media), is_directory=False))
 
-    assert queued == 1
-    assert work_queue.qsize() == 1
+        assert queued == 1
+        assert work_queue.qsize() == 1
+    finally:
+        state.close()

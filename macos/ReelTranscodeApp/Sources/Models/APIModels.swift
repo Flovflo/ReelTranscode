@@ -5,12 +5,14 @@ struct StatusResponse: Decodable, Sendable {
     let summary: JobSummary
     let latestJobs: [JobRow]
     let paths: StatusPaths
+    let runtime: RuntimeStatus
 
     enum CodingKeys: String, CodingKey {
         case apiVersion = "api_version"
         case summary
         case latestJobs = "latest_jobs"
         case paths
+        case runtime
     }
 }
 
@@ -60,6 +62,24 @@ struct StatusPaths: Decodable, Sendable {
         case stateDB = "state_db"
         case reportsDir = "reports_dir"
         case csvSummary = "csv_summary"
+    }
+}
+
+struct RuntimeStatus: Decodable, Sendable {
+    let watchRunning: Bool
+    let watchPaused: Bool
+    let queuedPaths: Int
+    let activeWorkers: Int
+    let maxWorkers: Int
+    let updatedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case watchRunning = "watch_running"
+        case watchPaused = "watch_paused"
+        case queuedPaths = "queued_paths"
+        case activeWorkers = "active_workers"
+        case maxWorkers = "max_workers"
+        case updatedAt = "updated_at"
     }
 }
 

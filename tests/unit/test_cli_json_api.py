@@ -121,6 +121,7 @@ def test_status_json_contract(tmp_path: Path, capsys):
     )
     state = StateStore(cfg.paths.state_db)
     try:
+        state.update_runtime_state(watch_running=True, queued_paths=3, active_workers=1, max_workers=4)
         job_id = "job-1"
         source = tmp_path / "movie.mkv"
         state.mark_job_started(
@@ -145,10 +146,29 @@ def test_status_json_contract(tmp_path: Path, capsys):
         payload = json.loads(out)
         assert payload["api_version"] == 1
         assert payload["summary"]["total"] == 1
+        assert payload["summary"]["pending"] == 3
+        assert payload["summary"]["running"] == 1
         assert payload["summary"]["success"] == 1
         assert len(payload["latest_jobs"]) == 1
         assert payload["latest_jobs"][0]["job_id"] == job_id
         assert payload["paths"]["state_db"] == str(cfg.paths.state_db)
+        assert payload["runtime"]["watch_running"] is True
+        assert payload["runtime"]["queued_paths"] == 3
+        assert payload["runtime"]["active_workers"] == 1
+        assert payload["runtime"]["max_workers"] == 4
         assert "capabilities" in payload
+    finally:
+        state.close()
+
+
+def test_runtime_pause_state_is_persisted(tmp_path: Path):
+    cfg = AppConfig.from_dict({"paths": {"state_db": str(tmp_path / "state.db")}})
+    state = StateStore(cfg.paths.state_db)
+    try:
+        assert state.is_watch_paused() is False
+        state.set_watch_paused(True)
+        assert state.is_watch_paused() is True
+        state.set_watch_paused(False)
+        assert state.is_watch_paused() is False
     finally:
         state.close()

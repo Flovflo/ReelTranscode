@@ -44,6 +44,8 @@ struct RootView: View {
         switch model.selectedSection ?? .dashboard {
         case .dashboard:
             DashboardView()
+        case .ingest:
+            IngestView()
         case .jobs:
             JobsView()
         case .configuration:
@@ -57,6 +59,8 @@ struct RootView: View {
         switch section {
         case .dashboard:
             return "speedometer"
+        case .ingest:
+            return "square.stack.3d.up.fill"
         case .jobs:
             return "list.bullet.rectangle"
         case .configuration:

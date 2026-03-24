@@ -35,6 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
     watch = sub.add_parser("watch", help="Watch configured folders for new files")
     watch.add_argument("--dry-run", action="store_true", help="Analyze only, do not write")
 
+    sub.add_parser("watch-pause", help="Pause watcher intake without stopping the service")
+    sub.add_parser("watch-resume", help="Resume watcher intake")
+
     analyze = sub.add_parser("analyze", help="Analyze one file and print compatibility decision")
     analyze.add_argument("path", help="File path")
 
@@ -80,6 +83,10 @@ def main() -> None:
         elif args.command == "watch":
             assert pipeline is not None
             _run_watch(config, pipeline, args.dry_run)
+        elif args.command == "watch-pause":
+            _run_watch_pause(state, paused=True)
+        elif args.command == "watch-resume":
+            _run_watch_pause(state, paused=False)
         elif args.command == "analyze":
             _run_analyze(config, Path(args.path))
         elif args.command == "process":
@@ -115,7 +122,7 @@ def _run_batch(config: AppConfig, pipeline: PipelineProcessor, dry_run: bool, li
 
 
 def _run_watch(config: AppConfig, pipeline: PipelineProcessor, dry_run: bool) -> None:
-    watcher = LibraryWatcher(config)
+    watcher = LibraryWatcher(config, pipeline.state_store)
 
     def _process(path: Path, root: Path) -> None:
         report = pipeline.process_path(path, root, dry_run_override=dry_run)
@@ -130,6 +137,12 @@ def _run_watch(config: AppConfig, pipeline: PipelineProcessor, dry_run: bool) ->
         )
 
     watcher.run_forever(_process)
+
+
+def _run_watch_pause(state: StateStore, paused: bool) -> None:
+    state.set_watch_paused(paused)
+    action = "paused" if paused else "resumed"
+    LOGGER.info("Watch intake %s", action)
 
 
 def _run_analyze(config: AppConfig, path: Path) -> None:
@@ -169,10 +182,16 @@ def _run_status(config: AppConfig, state: StateStore, limit: int, json_output: b
         return
 
     summary = payload["summary"]
+    runtime = payload["runtime"]
     print(
         "Summary: "
         f"total={summary['total']} pending={summary['pending']} running={summary['running']} "
         f"success={summary['success']} failed={summary['failed']} skipped={summary['skipped']}"
+    )
+    print(
+        "Watcher: "
+        f"running={runtime['watch_running']} paused={runtime['watch_paused']} "
+        f"queued={runtime['queued_paths']} active_workers={runtime['active_workers']}/{runtime['max_workers']}"
     )
     dv_caps = payload["capabilities"]
     print(

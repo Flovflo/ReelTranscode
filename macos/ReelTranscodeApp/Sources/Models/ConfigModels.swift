@@ -46,9 +46,11 @@ struct ConfigDocument {
     var mediainfoBin: String = ""
     var mp4muxerBin: String = ""
     var profile: PerformanceProfile = .balanced
+    var maxWorkers: Int = 2
 
     mutating func apply(_ profile: PerformanceProfile) {
         self.profile = profile
+        self.maxWorkers = max(1, profile.appliedConcurrency().maxWorkers)
     }
 
     func toYAML() -> String {
@@ -121,7 +123,7 @@ struct ConfigDocument {
           delete_original_after_success: false
         
         concurrency:
-          max_workers: \(concurrency.maxWorkers)
+          max_workers: \(max(1, maxWorkers))
           io_nice_sleep_seconds: \(concurrency.ioNiceSleep)
         
         retry:
@@ -184,6 +186,7 @@ struct ConfigDocument {
         if let concurrency = config["concurrency"]?.objectValue {
             let workers = concurrency["max_workers"]?.intValue ?? 2
             let sleep = concurrency["io_nice_sleep_seconds"]?.doubleValue ?? 0.0
+            doc.maxWorkers = max(1, workers)
             if workers <= 1 {
                 doc.profile = .lowImpact
             } else if workers >= 4 && sleep == 0.0 {

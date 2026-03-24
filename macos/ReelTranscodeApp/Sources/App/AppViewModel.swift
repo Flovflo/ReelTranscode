@@ -4,6 +4,7 @@ import AppKit
 
 enum SidebarSection: String, CaseIterable, Identifiable {
     case dashboard = "Dashboard"
+    case ingest = "Library Ingest"
     case jobs = "Jobs"
     case configuration = "Configuration"
     case logs = "Logs"
@@ -196,6 +197,18 @@ final class AppViewModel: ObservableObject {
 
     func refreshLogs() {
         logsText = logReader.combinedWatchLogs()
+    }
+
+    func pauseWatch() async {
+        await runBackendCommand(arguments: ["--config", AppPaths.configFileURL.path, "watch-pause"])
+        await refreshStatus()
+        refreshLaunchdStatus()
+    }
+
+    func resumeWatch() async {
+        await runBackendCommand(arguments: ["--config", AppPaths.configFileURL.path, "watch-resume"])
+        await refreshStatus()
+        refreshLaunchdStatus()
     }
 
     func pickFolder() -> String? {

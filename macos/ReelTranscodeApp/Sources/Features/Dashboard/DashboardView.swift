@@ -131,22 +131,3 @@ struct DashboardView: View {
         }
     }
 }
-
-private extension JobRow {
-    var statusLabel: String {
-        switch status.lowercased() {
-        case "success":
-            return "Converted"
-        case "failed":
-            return "Error"
-        case "running":
-            return "In Progress"
-        case "pending":
-            return "Queued"
-        case "skipped":
-            return "Ignored"
-        default:
-            return status.capitalized
-        }
-    }
-}

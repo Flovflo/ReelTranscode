@@ -21,6 +21,16 @@ class FileRecord:
     last_job_id: str | None
 
 
+@dataclass(slots=True)
+class RuntimeState:
+    watch_running: bool
+    watch_paused: bool
+    queued_paths: int
+    active_workers: int
+    max_workers: int
+    updated_at: str
+
+
 class StateStore:
     def __init__(self, db_path: Path):
         ensure_parent(db_path)
@@ -81,6 +91,27 @@ class StateStore:
                     last_seen_at TEXT NOT NULL
                 )
                 """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS runtime_state (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    watch_running INTEGER NOT NULL DEFAULT 0,
+                    watch_paused INTEGER NOT NULL DEFAULT 0,
+                    queued_paths INTEGER NOT NULL DEFAULT 0,
+                    active_workers INTEGER NOT NULL DEFAULT 0,
+                    max_workers INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                INSERT INTO runtime_state(singleton, watch_running, watch_paused, queued_paths, active_workers, max_workers, updated_at)
+                VALUES (1, 0, 0, 0, 0, 0, ?)
+                ON CONFLICT(singleton) DO NOTHING
+                """,
+                (now_utc_iso(),),
             )
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
 
@@ -181,6 +212,65 @@ class StateStore:
                 ),
             )
 
+    def get_runtime_state(self) -> RuntimeState:
+        row = self._conn.execute(
+            """
+            SELECT watch_running, watch_paused, queued_paths, active_workers, max_workers, updated_at
+            FROM runtime_state
+            WHERE singleton=1
+            """
+        ).fetchone()
+        if row is None:
+            return RuntimeState(False, False, 0, 0, 0, now_utc_iso())
+        return RuntimeState(
+            watch_running=bool(row["watch_running"]),
+            watch_paused=bool(row["watch_paused"]),
+            queued_paths=int(row["queued_paths"]),
+            active_workers=int(row["active_workers"]),
+            max_workers=int(row["max_workers"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def set_watch_paused(self, paused: bool) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                UPDATE runtime_state
+                SET watch_paused=?, updated_at=?
+                WHERE singleton=1
+                """,
+                (1 if paused else 0, now_utc_iso()),
+            )
+
+    def is_watch_paused(self) -> bool:
+        return self.get_runtime_state().watch_paused
+
+    def update_runtime_state(
+        self,
+        *,
+        watch_running: bool | None = None,
+        queued_paths: int | None = None,
+        active_workers: int | None = None,
+        max_workers: int | None = None,
+    ) -> None:
+        runtime = self.get_runtime_state()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                UPDATE runtime_state
+                SET watch_running=?, watch_paused=?, queued_paths=?, active_workers=?, max_workers=?, updated_at=?
+                WHERE singleton=1
+                """,
+                (
+                    1 if (runtime.watch_running if watch_running is None else watch_running) else 0,
+                    1 if runtime.watch_paused else 0,
+                    runtime.queued_paths if queued_paths is None else max(0, int(queued_paths)),
+                    runtime.active_workers if active_workers is None else max(0, int(active_workers)),
+                    runtime.max_workers if max_workers is None else max(0, int(max_workers)),
+                    now_utc_iso(),
+                ),
+            )
+
     def status_snapshot(self, limit: int = 50) -> dict[str, Any]:
         capped_limit = max(1, min(int(limit), 500))
         summary = {
@@ -236,9 +326,20 @@ class StateStore:
             }
             for row in latest_rows
         ]
+        runtime = self.get_runtime_state()
+        summary["pending"] = max(summary["pending"], runtime.queued_paths)
+        summary["running"] = max(summary["running"], runtime.active_workers)
         return {
             "summary": summary,
             "latest_jobs": latest_jobs,
+            "runtime": {
+                "watch_running": runtime.watch_running,
+                "watch_paused": runtime.watch_paused,
+                "queued_paths": runtime.queued_paths,
+                "active_workers": runtime.active_workers,
+                "max_workers": runtime.max_workers,
+                "updated_at": runtime.updated_at,
+            },
         }
 
     def upsert_file_state(

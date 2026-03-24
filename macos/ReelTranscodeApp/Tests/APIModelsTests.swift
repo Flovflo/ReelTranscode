@@ -32,6 +32,14 @@ final class APIModelsTests: XCTestCase {
             "state_db": "/tmp/state.db",
             "reports_dir": "/tmp/reports",
             "csv_summary": "/tmp/reports/summary.csv"
+          },
+          "runtime": {
+            "watch_running": true,
+            "watch_paused": false,
+            "queued_paths": 12,
+            "active_workers": 2,
+            "max_workers": 4,
+            "updated_at": "2026-03-23T20:00:00Z"
           }
         }
         """
@@ -40,5 +48,7 @@ final class APIModelsTests: XCTestCase {
         XCTAssertEqual(response.apiVersion, 1)
         XCTAssertEqual(response.summary.running, 1)
         XCTAssertEqual(response.latestJobs.first?.jobID, "abc")
+        XCTAssertTrue(response.runtime.watchRunning)
+        XCTAssertEqual(response.runtime.queuedPaths, 12)
     }
 }

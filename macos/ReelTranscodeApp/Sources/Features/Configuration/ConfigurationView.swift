@@ -70,6 +70,14 @@ struct ConfigurationView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+
+                Stepper(value: $model.config.maxWorkers, in: 1...8) {
+                    LabeledContent("Concurrent Jobs", value: "\(model.config.maxWorkers)")
+                }
+
+                Text("Use fewer workers for fragile NAS volumes, more workers for big ingest queues on fast storage.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Actions") {
@@ -92,6 +100,9 @@ struct ConfigurationView: View {
         .formStyle(.grouped)
         .navigationTitle("Configuration")
         .padding(20)
+        .onChange(of: model.config.profile) { _, newProfile in
+            model.config.apply(newProfile)
+        }
     }
 
     private func addWatchFolder(_ path: String) {

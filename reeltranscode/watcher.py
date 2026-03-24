@@ -11,6 +11,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from reeltranscode.config import AppConfig
+from reeltranscode.state_store import StateStore
 from reeltranscode.utils import is_media_file, wait_for_stable_file
 
 LOGGER = logging.getLogger(__name__)
@@ -66,10 +67,12 @@ class _MediaEventHandler(FileSystemEventHandler):
 
 
 class LibraryWatcher:
-    def __init__(self, cfg: AppConfig):
+    def __init__(self, cfg: AppConfig, state_store: StateStore):
         self.cfg = cfg
+        self.state_store = state_store
         self._stop_event = threading.Event()
         self._queued_paths: set[Path] = set()
+        self._inflight_paths: set[Path] = set()
         self._queued_paths_lock = threading.Lock()
 
     def run_forever(self, process_fn) -> None:
@@ -78,6 +81,12 @@ class LibraryWatcher:
 
         work_queue: queue.Queue[QueuedPath] = queue.Queue()
         observers: list[Observer] = []
+        self.state_store.update_runtime_state(
+            watch_running=True,
+            queued_paths=0,
+            active_workers=0,
+            max_workers=self.cfg.concurrency.max_workers,
+        )
 
         for root in self.cfg.watch.folders:
             if self.cfg.is_excluded_from_watch(root):
@@ -111,18 +120,23 @@ class LibraryWatcher:
                 observer.stop()
             for observer in observers:
                 observer.join(timeout=10)
+            self.state_store.update_runtime_state(watch_running=False, queued_paths=0, active_workers=0)
 
     def stop(self) -> None:
         self._stop_event.set()
 
     def _worker(self, work_queue: queue.Queue[QueuedPath], process_fn) -> None:
         while not self._stop_event.is_set():
+            if self.state_store.is_watch_paused():
+                time.sleep(1)
+                continue
             try:
                 item = work_queue.get(timeout=1)
             except queue.Empty:
                 continue
 
             try:
+                self._mark_started(item.path)
                 if not item.seeded:
                     stable = wait_for_stable_file(
                         path=item.path,
@@ -163,10 +177,29 @@ class LibraryWatcher:
             if resolved in self._queued_paths:
                 return False
             self._queued_paths.add(resolved)
+        self._publish_runtime_state()
         work_queue.put(item)
         return True
+
+    def _mark_started(self, path: Path) -> None:
+        resolved = path.resolve()
+        with self._queued_paths_lock:
+            self._inflight_paths.add(resolved)
+        self._publish_runtime_state()
 
     def _mark_finished(self, path: Path) -> None:
         resolved = path.resolve()
         with self._queued_paths_lock:
             self._queued_paths.discard(resolved)
+            self._inflight_paths.discard(resolved)
+        self._publish_runtime_state()
+
+    def _publish_runtime_state(self) -> None:
+        with self._queued_paths_lock:
+            active_workers = len(self._inflight_paths)
+            queued_paths = max(0, len(self._queued_paths) - active_workers)
+        self.state_store.update_runtime_state(
+            queued_paths=queued_paths,
+            active_workers=active_workers,
+            max_workers=self.cfg.concurrency.max_workers,
+        )
