@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_PATH="${1:?Usage: smoke_test_packaged_backend.sh /path/to/ReelTranscodeApp.app}"
+APP_PATH="$(cd "${1:?Usage: smoke_test_packaged_backend.sh /path/to/ReelTranscodeApp.app}" && pwd)"
 RESOURCES_DIR="$APP_PATH/Contents/Resources"
 BACKEND_BIN="$RESOURCES_DIR/runtime/ReelTranscodeCore/ReelTranscodeCore"
 BIN_DIR="$RESOURCES_DIR/bin"

@@ -47,6 +47,7 @@ cp -R "$ARCHIVE_PATH/Products/Applications/ReelTranscodeApp.app" "$APP_BUNDLE"
 "$ROOT_DIR/tools/collect_runtime_assets.sh" "$APP_BUNDLE/Contents"
 "$ROOT_DIR/tools/smoke_test_packaged_backend.sh" "$APP_BUNDLE"
 "$ROOT_DIR/tools/sign_app_bundle.sh" "$APP_BUNDLE" "$APPLE_SIGN_IDENTITY" --timestamp
+"$ROOT_DIR/tools/smoke_test_packaged_backend.sh" "$APP_BUNDLE"
 
 hdiutil create -volname "ReelTranscode" -srcfolder "$APP_BUNDLE" -ov -format UDZO "$DMG_PATH"
 
