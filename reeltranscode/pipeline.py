@@ -385,9 +385,9 @@ class PipelineProcessor:
         if plan.ocr_subtitle_tasks:
             required_bytes += max(512 * 1024 * 1024, source_size // 20)
         message = (
-            f"Not enough free space in paths.temp_dir for {source_path.name}. "
+            f"Not enough free space in the temporary workspace for {source_path.name}. "
             f"Need about {_format_bytes(required_bytes)}, have {_format_bytes(free_bytes)} in {workspace_root}. "
-            "Set paths.temp_dir to a larger volume before retrying."
+            "Free up space on that volume or configure paths.temp_dir as a larger fallback volume before retrying."
         )
         if details:
             return f"{message} tool output: {details}"

@@ -193,6 +193,57 @@ def test_scanner_skips_managed_output_and_temp_paths(tmp_path):
     assert files == [(source_media, root)]
 
 
+def test_seed_existing_files_skips_dynamic_source_local_temp_workspace(tmp_path):
+    root = tmp_path / "watch"
+    source_workspace = root / ".reeltranscode-tmp"
+    source_workspace.mkdir(parents=True)
+    source_media = root / "movie.mkv"
+    temp_media = source_workspace / "movie.tmp.mp4"
+    source_media.write_bytes(b"source")
+    temp_media.write_bytes(b"temp")
+
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {"folders": [str(root)]},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+        }
+    )
+    watcher, state = _make_watcher(cfg, tmp_path)
+    work_queue: queue.Queue = queue.Queue()
+
+    try:
+        queued = watcher._seed_existing_files(root, work_queue)  # noqa: SLF001 - tested behavior
+
+        assert queued == 1
+        item = work_queue.get_nowait()
+        assert item.path == source_media
+    finally:
+        state.close()
+
+
+def test_scanner_skips_dynamic_source_local_temp_workspace(tmp_path):
+    root = tmp_path / "watch"
+    source_workspace = root / ".reeltranscode-tmp"
+    source_workspace.mkdir(parents=True)
+    source_media = root / "movie.mkv"
+    temp_media = source_workspace / "movie.tmp.mp4"
+    source_media.write_bytes(b"source")
+    temp_media.write_bytes(b"temp")
+
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {"folders": [str(root)]},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+        }
+    )
+
+    files = iter_media_files(cfg)
+
+    assert files == [(source_media, root)]
+
+
 def test_watcher_dedupes_seeded_file_against_immediate_filesystem_event(tmp_path):
     root = tmp_path / "watch"
     root.mkdir(parents=True)

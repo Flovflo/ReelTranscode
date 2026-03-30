@@ -18,7 +18,7 @@ from reeltranscode.models import (
     Strategy,
 )
 from reeltranscode.tooling import ToolchainResolver
-from reeltranscode.utils import ensure_dir
+from reeltranscode.utils import RUNTIME_TEMP_DIRNAME, ensure_dir
 
 SUPPORTED_AUDIO = {"eac3", "ac3", "aac"}
 
@@ -46,6 +46,7 @@ class CommandPlanner:
         source_root: Path | None,
     ) -> ExecutionPlan:
         target_path = self._build_target_path(media.path, source_root)
+        preferred_temp_root = self._preferred_temp_root(media.path)
         temp_root = self._select_temp_root(media, decision)
         notes: list[str] = []
         steps: list[CommandStep] = []
@@ -69,9 +70,15 @@ class CommandPlanner:
         self._ensure_apple_native_mp4_subtitles(media)
 
         if decision.use_dovi_muxer:
-            return self._build_dovi_muxer_plan(media, decision, source_root, temp_root=temp_root)
+            return self._build_dovi_muxer_plan(
+                media,
+                decision,
+                source_root,
+                temp_root=temp_root,
+                preferred_temp_root=preferred_temp_root,
+            )
 
-        if temp_root != self._configured_temp_root():
+        if temp_root != preferred_temp_root:
             notes.append(f"Using alternate temporary workspace volume: {temp_root}")
 
         workspace_dir = (
@@ -173,6 +180,7 @@ class CommandPlanner:
         source_root: Path | None,
         *,
         temp_root: Path | None = None,
+        preferred_temp_root: Path | None = None,
     ) -> ExecutionPlan:
         caps = self.tooling.resolve_dolby_vision_mux_capabilities()
         if not caps.available or not caps.mp4muxer_bin:
@@ -181,6 +189,7 @@ class CommandPlanner:
 
         target_path = self._build_target_path(media.path, source_root)
         selected_temp_root = temp_root or self._select_temp_root(media, decision)
+        preferred_root = preferred_temp_root or self._preferred_temp_root(media.path)
         workspace_dir = self._build_workspace_dir(media.path, "dovi", root=selected_temp_root)
         step_cwd = workspace_dir
         ocr_subtitle_tasks = self._build_ocr_subtitle_tasks(media, workspace_dir)
@@ -192,7 +201,7 @@ class CommandPlanner:
         )
         cmd = [caps.dovi_muxer_bin, str(base_temp_path), "-i", str(media.path), "-ffmpeg", caps.ffmpeg_bin]
         notes = ["DoViMuxer Dolby Vision safe remux path selected"]
-        if selected_temp_root != self._configured_temp_root():
+        if selected_temp_root != preferred_root:
             notes.append(f"Using alternate temporary workspace volume: {selected_temp_root}")
         subtitle_sidecars: list[Path] = []
         dropped_subtitle_streams: list[int] = []
@@ -607,19 +616,20 @@ class CommandPlanner:
         token = uuid.uuid4().hex[:10]
         prefix = "." if hidden else ""
         temp_name = f"{prefix}{source.stem}.{token}.tmp{target_path.suffix}"
-        temp_root = self._normalize_temp_root(root)
+        temp_root = self._normalize_temp_root(root, source=source)
         ensure_dir(temp_root)
         return (temp_root / temp_name).resolve()
 
     def _build_intermediate_path(self, source: Path, label: str, suffix: str) -> Path:
         token = uuid.uuid4().hex[:10]
         file_name = f".{source.stem}.{token}.{label}{suffix}"
-        ensure_dir(self.config.paths.temp_dir)
-        return (self.config.paths.temp_dir / file_name).resolve()
+        temp_root = self._normalize_temp_root(None, source=source)
+        ensure_dir(temp_root)
+        return (temp_root / file_name).resolve()
 
     def _build_workspace_dir(self, source: Path, label: str, *, root: Path | None = None) -> Path:
         token = uuid.uuid4().hex[:10]
-        temp_root = self._normalize_temp_root(root)
+        temp_root = self._normalize_temp_root(root, source=source)
         workspace_dir = (temp_root / f".{source.stem}.{token}.{label}").resolve()
         ensure_dir(workspace_dir)
         return workspace_dir
@@ -630,22 +640,41 @@ class CommandPlanner:
             use_dovi_muxer=decision.use_dovi_muxer,
             needs_subtitle_ocr=self._needs_subtitle_ocr(media),
         )
-        fallback_root = self._configured_temp_root()
-        for candidate in self._temp_root_candidates():
-            ensure_dir(candidate)
+        fallback_root: Path | None = None
+        for candidate in self._temp_root_candidates(media.path):
+            try:
+                ensure_dir(candidate)
+            except OSError:
+                continue
+            fallback_root = fallback_root or candidate
             try:
                 free_bytes = shutil.disk_usage(candidate).free
             except OSError:
                 continue
             if free_bytes >= required_bytes:
                 return candidate
-        ensure_dir(fallback_root)
-        return fallback_root
+        if fallback_root is not None:
+            return fallback_root
+        preferred_root = self._preferred_temp_root(media.path)
+        ensure_dir(preferred_root)
+        return preferred_root
 
-    def _temp_root_candidates(self) -> list[Path]:
-        candidates = [self._configured_temp_root()]
+    def _preferred_temp_root(self, source: Path) -> Path:
+        source_parent = source.expanduser().parent
+        if source_parent.exists():
+            return self._source_temp_root(source)
+        return self._configured_temp_root()
+
+    def _source_temp_root(self, source: Path) -> Path:
+        return (source.expanduser().parent / RUNTIME_TEMP_DIRNAME).resolve()
+
+    def _temp_root_candidates(self, source: Path) -> list[Path]:
+        candidates = [self._preferred_temp_root(source)]
+        configured_temp_root = self._configured_temp_root()
+        if configured_temp_root not in candidates:
+            candidates.append(configured_temp_root)
         if self.config.output.mode != "replace_original":
-            output_temp_root = (self.config.output.output_root / ".reeltranscode-tmp").expanduser().resolve()
+            output_temp_root = (self.config.output.output_root / RUNTIME_TEMP_DIRNAME).expanduser().resolve()
             if output_temp_root not in candidates:
                 candidates.append(output_temp_root)
         return candidates
@@ -667,8 +696,12 @@ class CommandPlanner:
             required_bytes += max(512 * 1024 * 1024, source_size // 20)
         return required_bytes
 
-    def _normalize_temp_root(self, root: Path | None) -> Path:
-        return (root or self.config.paths.temp_dir).expanduser().resolve()
+    def _normalize_temp_root(self, root: Path | None, *, source: Path | None = None) -> Path:
+        if root is not None:
+            return root.expanduser().resolve()
+        if source is not None:
+            return self._preferred_temp_root(source)
+        return self._configured_temp_root()
 
     def _dovi_mp4box_profile_arg(self, media: MediaInfo) -> str | None:
         dv = FFprobeAnalyzer.inspect_dolby_vision(media)

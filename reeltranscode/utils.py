@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reeltranscode.config import AppConfig
 
+RUNTIME_TEMP_DIRNAME = ".reeltranscode-tmp"
+
 
 def setup_logging(config: AppConfig) -> None:
     level = getattr(logging, config.logging.level.upper(), logging.INFO)
@@ -31,6 +33,14 @@ def ensure_parent(path: Path) -> None:
 
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def is_runtime_temp_path(path: Path) -> bool:
+    try:
+        candidate = path.expanduser().resolve()
+    except OSError:
+        candidate = path.expanduser()
+    return RUNTIME_TEMP_DIRNAME in candidate.parts
 
 
 def is_media_file(path: Path, allowed_extensions: set[str]) -> bool:

@@ -48,13 +48,13 @@ struct ConfigurationView: View {
             }
 
             Section("Temporary Workspace") {
-                Text("Use a volume with plenty of free space for DV-safe remux and OCR temporary files.")
+                Text("Temporary files are created next to the source media in .reeltranscode-tmp when possible. Use this fallback volume only when the source volume is unavailable or too small.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack {
-                    Text("Temp dir")
+                    Text("Fallback dir")
                         .frame(width: 110, alignment: .leading)
-                    TextField("Temporary workspace", text: $model.config.tempDir)
+                    TextField("Fallback temporary workspace", text: $model.config.tempDir)
                     Button("Browse") {
                         if let picked = model.pickFolder() {
                             model.config.tempDir = picked

@@ -29,8 +29,10 @@ def test_plan_for_sample1_keeps_video_copy(tmp_path: Path):
             "paths": {"temp_dir": str(tmp_path / "tmp")},
         }
     )
+    media_root = tmp_path / "media" / "Movies"
+    media_root.mkdir(parents=True)
     media = _media(
-        "/Volumes/Media/Movies/Zootopia.2.2025.mkv",
+        str(media_root / "Zootopia.2.2025.mkv"),
         "matroska,webm",
         [
             {
@@ -66,7 +68,7 @@ def test_plan_for_sample1_keeps_video_copy(tmp_path: Path):
     decision, comp = engine.decide(media)
 
     planner = CommandPlanner(cfg)
-    plan = planner.build(media, decision, comp, Path("/Volumes/Media/Movies"))
+    plan = planner.build(media, decision, comp, media_root)
 
     assert plan.steps
     cmd = plan.steps[0].command
@@ -76,8 +78,54 @@ def test_plan_for_sample1_keeps_video_copy(tmp_path: Path):
     assert cmd[cmd.index("-tag:v") + 1] == "hvc1"
     assert str(plan.target_path).endswith(".mp4")
     assert plan.temp_path is not None
-    assert plan.temp_path.parent == (tmp_path / "tmp").resolve()
+    assert plan.temp_path.parent == (media_root / ".reeltranscode-tmp").resolve()
     assert plan.steps[0].cwd == plan.target_path.parent
+    assert not any("Using alternate temporary workspace volume" in note for note in plan.notes)
+
+
+def test_plan_prefers_source_local_temp_root_when_source_directory_exists(tmp_path: Path):
+    media_root = tmp_path / "watch" / "Movies"
+    media_root.mkdir(parents=True)
+    cfg = AppConfig.from_dict(
+        {
+            "remux": {"preferred_container": "mp4"},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "fallback-tmp")},
+        }
+    )
+    media = _media(
+        str(media_root / "SpiderVerse.mkv"),
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "pix_fmt": "yuv420p10le",
+                "width": 3840,
+                "height": 1608,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "fra"},
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, media_root)
+
+    assert plan.temp_path is not None
+    assert plan.temp_path.parent == (media_root / ".reeltranscode-tmp").resolve()
+    assert not any("Using alternate temporary workspace volume" in note for note in plan.notes)
 
 
 def test_mp4_plan_preserves_text_subtitle_metadata_and_flags():
@@ -794,14 +842,17 @@ def test_dovi_muxer_plan_can_ocr_image_subtitles_into_mov_text(tmp_path: Path):
     assert any("Reapplied Dolby Vision signaling" in note for note in plan.notes)
 
 
-def test_plan_uses_output_temp_root_when_configured_temp_dir_is_too_small(
+def test_plan_uses_output_temp_root_when_source_local_and_configured_temp_roots_are_too_small(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    media_root = tmp_path / "media" / "Movies"
     temp_dir = tmp_path / "tmp"
     output_root = tmp_path / "optimized"
+    media_root.mkdir(parents=True)
     temp_dir.mkdir()
     output_root.mkdir()
+    source_temp_root = media_root / ".reeltranscode-tmp"
 
     cfg = AppConfig.from_dict(
         {
@@ -811,7 +862,7 @@ def test_plan_uses_output_temp_root_when_configured_temp_dir_is_too_small(
         }
     )
     media = _media(
-        "/Volumes/Media/Movies/SpiderVerse.mkv",
+        str(media_root / "SpiderVerse.mkv"),
         "matroska,webm",
         [
             {
@@ -839,6 +890,8 @@ def test_plan_uses_output_temp_root_when_configured_temp_dir_is_too_small(
 
     def fake_disk_usage(path: str | Path):
         resolved = Path(path).resolve()
+        if resolved == source_temp_root.resolve():
+            return SimpleNamespace(total=20 * 1024**3, used=18 * 1024**3, free=2 * 1024**3)
         if resolved == temp_dir.resolve():
             return SimpleNamespace(total=20 * 1024**3, used=18 * 1024**3, free=2 * 1024**3)
         return SimpleNamespace(total=40 * 1024**3, used=8 * 1024**3, free=32 * 1024**3)
@@ -846,14 +899,14 @@ def test_plan_uses_output_temp_root_when_configured_temp_dir_is_too_small(
     monkeypatch.setattr("reeltranscode.planner.shutil.disk_usage", fake_disk_usage)
 
     decision, comp = DecisionEngine(cfg).decide(media)
-    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
+    plan = CommandPlanner(cfg).build(media, decision, comp, media_root)
 
     assert plan.temp_path is not None
     assert plan.temp_path.parent == (output_root / ".reeltranscode-tmp").resolve()
     assert any("Using alternate temporary workspace volume" in note for note in plan.notes)
 
 
-def test_dovi_muxer_plan_uses_output_temp_root_when_configured_temp_dir_is_too_small(
+def test_dovi_muxer_plan_uses_output_temp_root_when_source_local_and_configured_temp_roots_are_too_small(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -864,10 +917,13 @@ def test_dovi_muxer_plan_uses_output_temp_root_when_configured_temp_dir_is_too_s
         path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         path.chmod(0o755)
 
+    media_root = tmp_path / "media" / "Movies"
     temp_dir = tmp_path / "tmp"
     output_root = tmp_path / "optimized"
+    media_root.mkdir(parents=True)
     temp_dir.mkdir()
     output_root.mkdir()
+    source_temp_root = media_root / ".reeltranscode-tmp"
 
     cfg = AppConfig.from_dict(
         {
@@ -888,7 +944,7 @@ def test_dovi_muxer_plan_uses_output_temp_root_when_configured_temp_dir_is_too_s
         }
     )
     media = _media(
-        "/Volumes/Media/Movies/dv_movie.mkv",
+        str(media_root / "dv_movie.mkv"),
         "matroska,webm",
         [
             {
@@ -927,6 +983,8 @@ def test_dovi_muxer_plan_uses_output_temp_root_when_configured_temp_dir_is_too_s
 
     def fake_disk_usage(path: str | Path):
         resolved = Path(path).resolve()
+        if resolved == source_temp_root.resolve():
+            return SimpleNamespace(total=20 * 1024**3, used=18 * 1024**3, free=2 * 1024**3)
         if resolved == temp_dir.resolve():
             return SimpleNamespace(total=20 * 1024**3, used=18 * 1024**3, free=2 * 1024**3)
         return SimpleNamespace(total=60 * 1024**3, used=10 * 1024**3, free=50 * 1024**3)
@@ -942,7 +1000,7 @@ def test_dovi_muxer_plan_uses_output_temp_root_when_configured_temp_dir_is_too_s
         use_dovi_muxer=True,
     )
     _, comp = DecisionEngine(cfg).decide(media)
-    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
+    plan = CommandPlanner(cfg).build(media, decision, comp, media_root)
 
     expected_root = (output_root / ".reeltranscode-tmp").resolve()
     assert plan.workspace_dir is not None
