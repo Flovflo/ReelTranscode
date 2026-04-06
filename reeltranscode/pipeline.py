@@ -11,7 +11,7 @@ from reeltranscode.analyzer import FFprobeAnalyzer, ProbeError
 from reeltranscode.config import AppConfig
 from reeltranscode.decision_engine import DecisionEngine
 from reeltranscode.ffmpeg_runner import CommandFailedError, FFmpegRunner
-from reeltranscode.models import JobReport, JobStatus
+from reeltranscode.models import JobReport, JobStatus, Strategy
 from reeltranscode.planner import CommandPlanner
 from reeltranscode.reporter import Reporter
 from reeltranscode.retry import run_with_retry
@@ -50,12 +50,10 @@ class PipelineProcessor:
         cleanup_paths: list[Path] = []
         cleanup_dirs: list[Path] = []
 
-        stat = path.stat()
-        device = stat.st_dev
-        inode = stat.st_ino
-        size = stat.st_size
-        mtime_ns = stat.st_mtime_ns
-
+        device: int | None = None
+        inode: int | None = None
+        size: int | None = None
+        mtime_ns: int | None = None
         error_class: str | None = None
         error_message: str | None = None
         status = JobStatus.RUNNING
@@ -68,7 +66,7 @@ class PipelineProcessor:
         expected_safe_override: bool | None = None
 
         try:
-            # Record a running job row before probing so probe failures are visible in status/jobs.
+            # Record a running job row immediately so volatile-file failures are visible in status/jobs.
             self.state_store.mark_job_started(
                 job_id,
                 path,
@@ -79,12 +77,28 @@ class PipelineProcessor:
                 "",
             )
 
+            stat = path.stat()
+            device = stat.st_dev
+            inode = stat.st_ino
+            size = stat.st_size
+            mtime_ns = stat.st_mtime_ns
+
             media, probe_command = self.analyzer.analyze(path)
             stream_fp = self.analyzer.stream_fingerprint(media)
             metadata_fp = self.analyzer.metadata_fingerprint(media)
 
+            decision, compatibility = self.engine.decide(media)
+            preview_target_path = None
+            if decision.strategy != Strategy.NO_OP:
+                preview_target_path = self.planner.preview_target_path(path, source_root)
+
             should_skip, reason = self.state_store.should_skip(path, stream_fp, metadata_fp, size, mtime_ns)
-            if should_skip:
+            target_missing_for_skip = (
+                should_skip
+                and preview_target_path is not None
+                and not preview_target_path.exists()
+            )
+            if should_skip and not target_missing_for_skip:
                 self.state_store.mark_job_started(
                     job_id,
                     path,
@@ -100,7 +114,10 @@ class PipelineProcessor:
                 reasons_override = [f"Skipped due to state dedupe: {reason}"]
                 expected_safe_override = True
             else:
-                decision, compatibility = self.engine.decide(media)
+                if target_missing_for_skip and preview_target_path is not None:
+                    validations.append(
+                        f"State dedupe bypassed because expected target is missing: {preview_target_path}"
+                    )
 
                 if (
                     self.config.validation.require_dv_preservation
@@ -108,7 +125,7 @@ class PipelineProcessor:
                     and decision.case_label.value == "F_DOLBY_VISION_FRAGILE"
                     and not decision.use_dovi_muxer
                 ):
-                    target_path = self.planner.preview_target_path(path, source_root)
+                    target_path = preview_target_path or self.planner.preview_target_path(path, source_root)
                     quarantine_note = self._quarantine_incompatible_existing_target(
                         source_media=media,
                         decision=decision,
@@ -168,7 +185,7 @@ class PipelineProcessor:
                 cleanup_paths = list(plan.cleanup_paths)
                 cleanup_dirs = list(plan.cleanup_dirs)
                 validations.extend(plan.notes)
-                self._ensure_temp_capacity(path, size, decision, plan)
+                self._ensure_temp_capacity(path, size or 0, decision, plan)
 
                 if (
                     target_path
@@ -420,10 +437,10 @@ class PipelineProcessor:
         metadata_fp: str,
         error_class: str | None,
         error_message: str | None,
-        device: int,
-        inode: int,
-        size: int,
-        mtime_ns: int,
+        device: int | None,
+        inode: int | None,
+        size: int | None,
+        mtime_ns: int | None,
     ) -> JobReport:
         finished_at = now_utc_iso()
         duration_seconds = time.monotonic() - started_monotonic

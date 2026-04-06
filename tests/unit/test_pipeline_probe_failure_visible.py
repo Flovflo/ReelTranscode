@@ -53,3 +53,42 @@ def test_probe_failure_is_persisted_in_status_snapshot(tmp_path):
     assert snapshot["summary"]["total"] == 1
     assert snapshot["summary"]["failed"] == 1
     assert snapshot["latest_jobs"][0]["source_path"] == str(source)
+
+
+def test_missing_source_file_is_persisted_in_status_snapshot(tmp_path):
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {"folders": [str(tmp_path / "watch")]},
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+            "output": {
+                "mode": "keep_original",
+                "output_root": str(tmp_path / "out"),
+                "archive_root": str(tmp_path / "archive"),
+                "overwrite": True,
+            },
+        }
+    )
+
+    source = tmp_path / "watch" / "missing.mkv"
+    source.parent.mkdir(parents=True)
+
+    state = StateStore(cfg.paths.state_db)
+    reporter = Reporter(cfg)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=reporter)
+
+    try:
+        report = processor.process_path(source, source.parent, dry_run_override=False)
+        snapshot = state.status_snapshot(limit=20)
+    finally:
+        state.close()
+
+    assert report.status == "failed"
+    assert report.error_class == "FileNotFoundError"
+    assert snapshot["summary"]["total"] == 1
+    assert snapshot["summary"]["failed"] == 1
+    assert snapshot["latest_jobs"][0]["source_path"] == str(source)
