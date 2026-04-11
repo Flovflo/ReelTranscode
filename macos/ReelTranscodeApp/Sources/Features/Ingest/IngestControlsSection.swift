@@ -33,6 +33,7 @@ struct IngestControlsSection: View {
     private func controlButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
             .buttonStyle(.borderedProminent)
+            .disabled(model.isBusy)
     }
 
     private func statusBadge(title: String, tint: Color) -> some View {

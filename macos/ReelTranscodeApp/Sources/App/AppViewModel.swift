@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import AppKit
+import Darwin
 
 enum SidebarSection: String, CaseIterable, Identifiable {
     case dashboard = "Dashboard"
@@ -23,12 +24,14 @@ final class AppViewModel: ObservableObject {
     @Published var isBusy = false
     @Published var isServiceRunning = false
     @Published var serviceStatusText = ""
+    @Published var serviceDiagnosticsText = ""
     @Published var lastError: String?
 
     private let backendRunner = BackendRunner()
     private let runtimeInstaller = RuntimeInstaller()
     private let launchdService = LaunchdService()
     private let logReader = LogReader()
+    private let watchProcessService = WatchProcessService()
     private var inAppWatchProcess: Process?
     private var inAppWatchStdoutHandle: FileHandle?
     private var inAppWatchStderrHandle: FileHandle?
@@ -47,7 +50,6 @@ final class AppViewModel: ObservableObject {
                 }
                 await refreshStatus()
                 refreshLogs()
-                refreshLaunchdStatus()
             }
         } catch {
             lastError = error.localizedDescription
@@ -76,7 +78,7 @@ final class AppViewModel: ObservableObject {
         await refreshStatus()
     }
 
-    func refreshStatus() async {
+    func refreshStatus(reportErrors: Bool = false) async {
         do {
             let response: StatusResponse = try await backendRunner.runJSON(
                 arguments: ["--config", AppPaths.configFileURL.path, "status", "--json", "--limit", "250"],
@@ -84,8 +86,11 @@ final class AppViewModel: ObservableObject {
             )
             status = response
         } catch {
-            lastError = error.localizedDescription
+            if reportErrors {
+                lastError = error.localizedDescription
+            }
         }
+        await refreshLaunchdStatusAsync()
     }
 
     func validateConfig() async {
@@ -122,6 +127,31 @@ final class AppViewModel: ObservableObject {
     }
 
     func startWatchService() {
+        Task {
+            await performStartWatchService()
+        }
+    }
+
+    func stopWatchService() {
+        Task {
+            await performStopWatchService()
+        }
+    }
+
+    func refreshLaunchdStatus() {
+        Task {
+            await refreshLaunchdStatusAsync()
+        }
+    }
+
+    private func performStartWatchService() async {
+        guard !isBusy else { return }
+        isBusy = true
+        lastError = nil
+        serviceStatusText = "Starting watch service..."
+        serviceDiagnosticsText = ""
+        defer { isBusy = false }
+
         do {
             try persistCurrentConfig()
             try resetWatchLogsForNewSession()
@@ -135,6 +165,12 @@ final class AppViewModel: ObservableObject {
             }
 
             let resolvedExecutableURL = try BackendRunner.requireExecutableURL()
+            let existingLaunchdStatus = try? await runBlocking {
+                try self.launchdService.status()
+            }
+            if existingLaunchdStatus?.running != true {
+                _ = try await stopMatchingWatchProcesses()
+            }
 
             try launchdService.installOrUpdateWatchAgent(
                 executablePath: resolvedExecutableURL.path,
@@ -142,15 +178,24 @@ final class AppViewModel: ObservableObject {
                 workingDirectory: AppPaths.appSupportDirectory.path
             )
             do {
-                try launchdService.start()
-                stopInAppWatchProcess()
-                refreshLaunchdStatus()
+                let launchdService = self.launchdService
+                try await runBlocking {
+                    try launchdService.start()
+                }
+                let detachedFallback = detachInAppWatchProcess()
+                try await runBlocking {
+                    Self.stopDetachedInAppWatchProcess(detachedFallback)
+                }
+                lastError = nil
+                await refreshStatus()
             } catch let launchdError {
                 do {
                     try startInAppWatchProcess(executableURL: resolvedExecutableURL)
                     isServiceRunning = true
-                    serviceStatusText = "launchd unavailable, running in-app watch fallback.\n\(launchdError.localizedDescription)"
+                    serviceStatusText = "Watch service is running inside the app because launchd was unavailable."
+                    serviceDiagnosticsText = launchdError.localizedDescription
                     lastError = nil
+                    await refreshStatus()
                 } catch let fallbackError {
                     throw NSError(
                         domain: "ReelTranscodeApp",
@@ -166,33 +211,103 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func stopWatchService() {
+    private func performStopWatchService() async {
+        guard !isBusy else { return }
+        isBusy = true
+        lastError = nil
+        serviceStatusText = "Stopping watch service..."
+        serviceDiagnosticsText = ""
+        let detachedFallback = detachInAppWatchProcess()
+        defer { isBusy = false }
+
         var errors: [String] = []
         do {
-            try launchdService.stop()
+            try await runBlocking {
+                Self.stopDetachedInAppWatchProcess(detachedFallback)
+            }
         } catch {
             errors.append(error.localizedDescription)
         }
-        stopInAppWatchProcess()
-        refreshLaunchdStatus()
+
+        do {
+            let launchdService = self.launchdService
+            try await runBlocking {
+                try launchdService.stop()
+            }
+        } catch {
+            errors.append(error.localizedDescription)
+        }
+
+        do {
+            _ = try await stopMatchingWatchProcesses()
+        } catch {
+            errors.append(error.localizedDescription)
+        }
+
+        await refreshStatus()
         if !errors.isEmpty {
             lastError = errors.joined(separator: "\n")
         }
     }
 
-    func refreshLaunchdStatus() {
+    private func refreshLaunchdStatusAsync() async {
         if let process = inAppWatchProcess, process.isRunning {
             isServiceRunning = true
-            serviceStatusText = "In-app watch process running (fallback mode). PID \(process.processIdentifier)"
+            serviceStatusText = "Watch service is running inside the app (fallback mode)."
+            serviceDiagnosticsText = "Fallback PID \(process.processIdentifier)"
+            reconcileStatusWithObservedServiceState()
             return
         }
+
+        let matchingProcesses = (try? await findMatchingWatchProcesses()) ?? []
         do {
-            let status = try launchdService.status()
-            isServiceRunning = status.running
-            serviceStatusText = status.rawOutput
+            let launchdService = self.launchdService
+            let status = try await runBlocking {
+                try launchdService.status()
+            }
+            if status.running {
+                isServiceRunning = true
+                serviceStatusText = status.summary
+                serviceDiagnosticsText = combinedDiagnostics(
+                    primary: status.technicalDetails,
+                    matchingProcesses: matchingProcesses,
+                    label: "Observed watch process"
+                )
+            } else if !matchingProcesses.isEmpty {
+                isServiceRunning = true
+                serviceStatusText = matchingProcesses.count == 1
+                    ? "Watch service is running from another ReelTranscode build."
+                    : "Multiple watch processes are running outside launchd."
+                serviceDiagnosticsText = combinedDiagnostics(
+                    primary: status.technicalDetails,
+                    matchingProcesses: matchingProcesses,
+                    label: "Detached watch process"
+                )
+            } else {
+                isServiceRunning = false
+                serviceStatusText = status.summary
+                serviceDiagnosticsText = status.technicalDetails ?? ""
+            }
         } catch {
-            lastError = error.localizedDescription
+            if !matchingProcesses.isEmpty {
+                isServiceRunning = true
+                serviceStatusText = matchingProcesses.count == 1
+                    ? "Watch service is running from another ReelTranscode build."
+                    : "Multiple watch processes are running outside launchd."
+                serviceDiagnosticsText = combinedDiagnostics(
+                    primary: error.localizedDescription,
+                    matchingProcesses: matchingProcesses,
+                    label: "Detached watch process"
+                )
+            } else {
+                isServiceRunning = false
+                serviceDiagnosticsText = error.localizedDescription
+                if serviceStatusText.isEmpty {
+                    serviceStatusText = "Watch service status unavailable."
+                }
+            }
         }
+        reconcileStatusWithObservedServiceState()
     }
 
     func refreshLogs() {
@@ -202,13 +317,11 @@ final class AppViewModel: ObservableObject {
     func pauseWatch() async {
         await runBackendCommand(arguments: ["--config", AppPaths.configFileURL.path, "watch-pause"])
         await refreshStatus()
-        refreshLaunchdStatus()
     }
 
     func resumeWatch() async {
         await runBackendCommand(arguments: ["--config", AppPaths.configFileURL.path, "watch-resume"])
         await refreshStatus()
-        refreshLaunchdStatus()
     }
 
     func pickFolder() -> String? {
@@ -253,6 +366,7 @@ final class AppViewModel: ObservableObject {
         config.mp4boxBin = BackendRunner.mp4boxBinaryURL()?.path ?? ""
         config.mediainfoBin = BackendRunner.mediainfoBinaryURL()?.path ?? ""
         config.mp4muxerBin = BackendRunner.mp4muxerBinaryURL()?.path ?? ""
+        config.normalizeManagedPathsForPersistence()
         try config.toYAML().write(to: AppPaths.configFileURL, atomically: true, encoding: .utf8)
     }
 
@@ -303,18 +417,6 @@ final class AppViewModel: ObservableObject {
         inAppWatchProcess = process
     }
 
-    private func stopInAppWatchProcess() {
-        guard let process = inAppWatchProcess else { return }
-        if process.isRunning {
-            process.terminate()
-        }
-        inAppWatchProcess = nil
-        inAppWatchStdoutHandle?.closeFile()
-        inAppWatchStderrHandle?.closeFile()
-        inAppWatchStdoutHandle = nil
-        inAppWatchStderrHandle = nil
-    }
-
     private func resetWatchLogsForNewSession() throws {
         try runtimeInstaller.prepareDirectories()
         let files = [AppPaths.watchStdoutURL, AppPaths.watchStderrURL]
@@ -328,4 +430,111 @@ final class AppViewModel: ObservableObject {
             }
         }
     }
+
+    private func reconcileStatusWithObservedServiceState() {
+        guard let current = status else { return }
+
+        let mergedRuntime = current.runtime.with(
+            watchRunning: isServiceRunning,
+            queuedPaths: max(current.runtime.queuedPaths, current.summary.pending),
+            activeWorkers: max(current.runtime.activeWorkers, current.summary.running),
+            maxWorkers: max(current.runtime.maxWorkers, current.runtime.activeWorkers, current.summary.running, 1)
+        )
+        status = current.withRuntime(mergedRuntime)
+    }
+
+    private func findMatchingWatchProcesses() async throws -> [WatchProcessInfo] {
+        let excludedPIDs = Set(inAppWatchProcess.map { [$0.processIdentifier] } ?? [])
+        let watchProcessService = self.watchProcessService
+        return try await runBlocking {
+            try watchProcessService.findWatchProcesses(configPath: AppPaths.configFileURL.path)
+                .filter { !excludedPIDs.contains($0.pid) }
+        }
+    }
+
+    private func stopMatchingWatchProcesses() async throws -> [WatchProcessInfo] {
+        let excludedPIDs = Set(inAppWatchProcess.map { [$0.processIdentifier] } ?? [])
+        let watchProcessService = self.watchProcessService
+        return try await runBlocking {
+            try watchProcessService.stopWatchProcesses(
+                configPath: AppPaths.configFileURL.path,
+                excluding: excludedPIDs
+            )
+        }
+    }
+
+    private func combinedDiagnostics(
+        primary: String?,
+        matchingProcesses: [WatchProcessInfo],
+        label: String
+    ) -> String {
+        var sections: [String] = []
+
+        if let primary, !primary.isEmpty {
+            sections.append(primary)
+        }
+        if !matchingProcesses.isEmpty {
+            let details = matchingProcesses
+                .map { "\(label) PID \($0.pid)\n\($0.executablePath)" }
+                .joined(separator: "\n\n")
+            sections.append(details)
+        }
+        return sections.joined(separator: "\n\n")
+    }
+
+    private func runBlocking<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    continuation.resume(returning: try operation())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func detachInAppWatchProcess() -> DetachedWatchProcess? {
+        guard let process = inAppWatchProcess else { return nil }
+        let detached = DetachedWatchProcess(
+            process: process,
+            stdoutHandle: inAppWatchStdoutHandle,
+            stderrHandle: inAppWatchStderrHandle
+        )
+        inAppWatchProcess = nil
+        inAppWatchStdoutHandle = nil
+        inAppWatchStderrHandle = nil
+        return detached
+    }
+
+    nonisolated private static func stopDetachedInAppWatchProcess(_ detached: DetachedWatchProcess?) {
+        guard let detached else { return }
+        defer {
+            detached.stdoutHandle?.closeFile()
+            detached.stderrHandle?.closeFile()
+        }
+
+        guard detached.process.isRunning else { return }
+        detached.process.terminate()
+        if waitForDetachedProcessExit(detached.process, timeout: 2) {
+            return
+        }
+
+        kill(detached.process.processIdentifier, SIGKILL)
+        _ = waitForDetachedProcessExit(detached.process, timeout: 1)
+    }
+
+    nonisolated private static func waitForDetachedProcessExit(_ process: Process, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return !process.isRunning
+    }
+}
+
+private struct DetachedWatchProcess: @unchecked Sendable {
+    let process: Process
+    let stdoutHandle: FileHandle?
+    let stderrHandle: FileHandle?
 }

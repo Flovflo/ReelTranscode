@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from reeltranscode.config import AppConfig
 
 RUNTIME_TEMP_DIRNAME = ".reeltranscode-tmp"
+TRANSIENT_MEDIA_MARKERS = (".tmp.", ".part.", ".partial.")
 
 
 def setup_logging(config: AppConfig) -> None:
@@ -41,6 +42,15 @@ def is_runtime_temp_path(path: Path) -> bool:
     except OSError:
         candidate = path.expanduser()
     return RUNTIME_TEMP_DIRNAME in candidate.parts
+
+
+def is_transient_media_path(path: Path) -> bool:
+    name = path.name.lower()
+    if not name:
+        return False
+    if name.startswith("."):
+        return True
+    return any(marker in name for marker in TRANSIENT_MEDIA_MARKERS)
 
 
 def is_media_file(path: Path, allowed_extensions: set[str]) -> bool:

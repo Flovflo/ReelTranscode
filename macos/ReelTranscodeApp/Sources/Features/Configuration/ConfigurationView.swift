@@ -29,11 +29,15 @@ struct ConfigurationView: View {
             }
 
             Section("Output") {
-                Toggle("Replace original files in place (advanced)", isOn: $model.config.replaceOriginalsInPlace)
-                Text("Recommended: keep originals and publish one validated Apple-native MP4 in the optimized output folder.")
+                Picker("Handling", selection: $model.config.outputBehavior) {
+                    ForEach(OutputBehavior.allCases) { behavior in
+                        Text(behavior.title).tag(behavior)
+                    }
+                }
+                Text(model.config.outputBehavior.summary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if !model.config.replaceOriginalsInPlace {
+                if model.config.outputBehavior.usesSeparateOutputRoot {
                     HStack {
                         Text("Optimized")
                             .frame(width: 110, alignment: .leading)
@@ -41,6 +45,18 @@ struct ConfigurationView: View {
                         Button("Browse") {
                             if let picked = model.pickFolder() {
                                 model.config.outputRoot = picked
+                            }
+                        }
+                    }
+                }
+                if model.config.outputBehavior.usesArchiveRoot {
+                    HStack {
+                        Text("Archive")
+                            .frame(width: 110, alignment: .leading)
+                        TextField("Archive root", text: $model.config.archiveRoot)
+                        Button("Browse") {
+                            if let picked = model.pickFolder() {
+                                model.config.archiveRoot = picked
                             }
                         }
                     }

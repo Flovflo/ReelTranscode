@@ -10,6 +10,7 @@
 		12F4B0B72C927C0B667EE045 /* LaunchdService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB2A9F9D2988060C74757540 /* LaunchdService.swift */; };
 		17098CA3AA7AAA53DCED0D22 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5768324FCB1895D79AD304D /* OnboardingView.swift */; };
 		17BF160E860A725A616A5443 /* APIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B518BDDA986E35D1F3012F11 /* APIModels.swift */; };
+		2A4D756F357BB12E8CB03E79 /* ConfigModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20712E741C5C774BCC5E45B9 /* ConfigModelsTests.swift */; };
 		311F64EFEE901267508C1565 /* ConfigModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D93F0736B8CCDD939A462AA /* ConfigModels.swift */; };
 		3437008D9A48BAD10AF5320B /* IngestJobSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A3FE2BDA2061A8264706417 /* IngestJobSections.swift */; };
 		363ABBDC2F815D3F95DCF71D /* IngestView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27BF2C62C1C2F17832DA95BC /* IngestView.swift */; };
@@ -17,6 +18,7 @@
 		49C6D6CE43ED385931358AB1 /* LogReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BB301E821B96748BDED61FA /* LogReader.swift */; };
 		49EADBC9F701A0F4AEF0B731 /* ReelTranscodeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9B55C58352A77D2822BA22 /* ReelTranscodeApp.swift */; };
 		52206AA1810EAD5229D9091F /* ConfigurationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F991D078938E4A40AC3E00 /* ConfigurationView.swift */; };
+		59FACE45ECAF004EE04874FC /* WatchProcessServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 439EA642F3711270203C452A /* WatchProcessServiceTests.swift */; };
 		615F63F8B004DA1DD6892A21 /* lib in Resources */ = {isa = PBXBuildFile; fileRef = 64D03342A82211FF7354E151 /* lib */; };
 		62677AD2E1699F6F8D266A07 /* AppPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13EE5A97AB819BE7C21A997 /* AppPaths.swift */; };
 		68A3DC8143458AD2FD7C685D /* IngestMetricsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D47821229469260E66441A0 /* IngestMetricsSection.swift */; };
@@ -37,6 +39,7 @@
 		DCC85E31D70A7531373D83C2 /* JobPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2CD88AC7A2029867AA28DE8 /* JobPresentation.swift */; };
 		E830C756703292F7CA818C74 /* runtime in Resources */ = {isa = PBXBuildFile; fileRef = 1F22806314D4298E1F50C647 /* runtime */; };
 		EE610D1BB2FC8D107CED1475 /* bin in Resources */ = {isa = PBXBuildFile; fileRef = D8E470BC815AD31A0D647FCE /* bin */; };
+		F740B91D4C26BEE5C1233B80 /* WatchProcessService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DF60132692D4B0780C72D3E /* WatchProcessService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -55,12 +58,14 @@
 		12DC0351260E2277DD6D8F62 /* IngestViewData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IngestViewData.swift; sourceTree = "<group>"; };
 		14ADB5929C527AF18225C266 /* RuntimeInstallerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeInstallerTests.swift; sourceTree = "<group>"; };
 		1F22806314D4298E1F50C647 /* runtime */ = {isa = PBXFileReference; lastKnownFileType = folder; name = runtime; path = Resources/runtime; sourceTree = SOURCE_ROOT; };
+		20712E741C5C774BCC5E45B9 /* ConfigModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigModelsTests.swift; sourceTree = "<group>"; };
 		23D8405BE026577C64C3F016 /* BackendRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendRunner.swift; sourceTree = "<group>"; };
 		27BF2C62C1C2F17832DA95BC /* IngestView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IngestView.swift; sourceTree = "<group>"; };
 		2F06A46733C86AF9DB1EB95E /* LaunchdServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdServiceTests.swift; sourceTree = "<group>"; };
 		381CA806869EE34967BF844C /* ReelTranscodeAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ReelTranscodeAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3A3FE2BDA2061A8264706417 /* IngestJobSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IngestJobSections.swift; sourceTree = "<group>"; };
 		3D93F0736B8CCDD939A462AA /* ConfigModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigModels.swift; sourceTree = "<group>"; };
+		439EA642F3711270203C452A /* WatchProcessServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchProcessServiceTests.swift; sourceTree = "<group>"; };
 		4625DC58BEEF8C91C2DB55C0 /* PerformanceProfileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceProfileTests.swift; sourceTree = "<group>"; };
 		4840DF7ED3CD23BF321C0D88 /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
 		4D47821229469260E66441A0 /* IngestMetricsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IngestMetricsSection.swift; sourceTree = "<group>"; };
@@ -70,6 +75,7 @@
 		64D03342A82211FF7354E151 /* lib */ = {isa = PBXFileReference; lastKnownFileType = folder; name = lib; path = Resources/lib; sourceTree = SOURCE_ROOT; };
 		83EAF0EBA055623A5A1BCA65 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		8DC0C0CF0EF16D4456C793FF /* ReelTranscodeApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ReelTranscodeApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9DF60132692D4B0780C72D3E /* WatchProcessService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchProcessService.swift; sourceTree = "<group>"; };
 		AE1C88A54B82B781595CEA0D /* IngestJobCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IngestJobCard.swift; sourceTree = "<group>"; };
 		B518BDDA986E35D1F3012F11 /* APIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIModels.swift; sourceTree = "<group>"; };
 		B5768324FCB1895D79AD304D /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
@@ -123,6 +129,7 @@
 				EB2A9F9D2988060C74757540 /* LaunchdService.swift */,
 				0BB301E821B96748BDED61FA /* LogReader.swift */,
 				02A9FCD9EA6911731FB0DD8E /* RuntimeInstaller.swift */,
+				9DF60132692D4B0780C72D3E /* WatchProcessService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -139,10 +146,12 @@
 			isa = PBXGroup;
 			children = (
 				BB8A0105D023904665068E38 /* APIModelsTests.swift */,
+				20712E741C5C774BCC5E45B9 /* ConfigModelsTests.swift */,
 				5F0EF1CC8374B9001F018EA2 /* Info.plist */,
 				2F06A46733C86AF9DB1EB95E /* LaunchdServiceTests.swift */,
 				4625DC58BEEF8C91C2DB55C0 /* PerformanceProfileTests.swift */,
 				14ADB5929C527AF18225C266 /* RuntimeInstallerTests.swift */,
+				439EA642F3711270203C452A /* WatchProcessServiceTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -244,6 +253,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 5586F7A70CCC0B695D42F83A /* Build configuration list for PBXNativeTarget "ReelTranscodeApp" */;
 			buildPhases = (
+				5ED4A2BE3169BCDEFA37D0DC /* Sync Embedded Runtime */,
 				8577A8F6B75044E74E07E3A6 /* Sources */,
 				4D43E8FC6B620A56D0836CA9 /* Resources */,
 			);
@@ -319,15 +329,38 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		5ED4A2BE3169BCDEFA37D0DC /* Sync Embedded Runtime */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Sync Embedded Runtime";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"$PROJECT_DIR/../../tools/sync_xcode_runtime_resources.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		1DE2C7C7CF9822E806EBF7A7 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				3BDD0749E569EA9653AF9AF9 /* APIModelsTests.swift in Sources */,
+				2A4D756F357BB12E8CB03E79 /* ConfigModelsTests.swift in Sources */,
 				D7597F8A7E626603B2991D0F /* LaunchdServiceTests.swift in Sources */,
 				D522654E09986262EEE2BD12 /* PerformanceProfileTests.swift in Sources */,
 				8DC460798D00E839FECE9667 /* RuntimeInstallerTests.swift in Sources */,
+				59FACE45ECAF004EE04874FC /* WatchProcessServiceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -357,6 +390,7 @@
 				49EADBC9F701A0F4AEF0B731 /* ReelTranscodeApp.swift in Sources */,
 				982D3A49063CC375B32D8214 /* RootView.swift in Sources */,
 				C72C79117FE850FB3F851261 /* RuntimeInstaller.swift in Sources */,
+				F740B91D4C26BEE5C1233B80 /* WatchProcessService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

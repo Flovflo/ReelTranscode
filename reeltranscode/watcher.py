@@ -120,6 +120,8 @@ class LibraryWatcher:
                 observer.stop()
             for observer in observers:
                 observer.join(timeout=10)
+            for worker in workers:
+                worker.join(timeout=10)
             self.state_store.update_runtime_state(watch_running=False, queued_paths=0, active_workers=0)
 
     def stop(self) -> None:

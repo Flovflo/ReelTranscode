@@ -9,6 +9,11 @@ targets:
     type: application
     platform: macOS
     deploymentTarget: "26.0"
+    preBuildScripts:
+      - name: Sync Embedded Runtime
+        shell: /bin/bash
+        script: |
+          "$PROJECT_DIR/../../tools/sync_xcode_runtime_resources.sh"
     sources:
       - path: Sources
       - path: Resources/runtime

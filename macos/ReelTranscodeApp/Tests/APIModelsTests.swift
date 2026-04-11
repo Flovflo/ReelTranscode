@@ -2,6 +2,25 @@ import XCTest
 @testable import ReelTranscodeApp
 
 final class APIModelsTests: XCTestCase {
+    func testBackendRunnerDecodeJSONRejectsEmptyPayloadWithReadableError() {
+        XCTAssertThrowsError(
+            try BackendRunner.decodeJSON("", arguments: ["status", "--json"], as: StatusResponse.self)
+        ) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "Backend command returned no JSON output: status --json"
+            )
+        }
+    }
+
+    func testBackendRunnerDecodeJSONWrapsInvalidPayloadWithCommandContext() {
+        XCTAssertThrowsError(
+            try BackendRunner.decodeJSON("{", arguments: ["status", "--json"], as: StatusResponse.self)
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Backend command returned unreadable JSON: status --json"))
+        }
+    }
+
     func testStatusResponseDecoding() throws {
         let json = """
         {
@@ -50,5 +69,34 @@ final class APIModelsTests: XCTestCase {
         XCTAssertEqual(response.latestJobs.first?.jobID, "abc")
         XCTAssertTrue(response.runtime.watchRunning)
         XCTAssertEqual(response.runtime.queuedPaths, 12)
+    }
+
+    func testStatusResponseDecodingFallsBackWhenLegacyRuntimeIsMissing() throws {
+        let json = """
+        {
+          "api_version": 1,
+          "summary": {
+            "pending": 3,
+            "running": 1,
+            "success": 10,
+            "failed": 1,
+            "skipped": 2,
+            "total": 17
+          },
+          "latest_jobs": [],
+          "paths": {
+            "state_db": "/tmp/state.db",
+            "reports_dir": "/tmp/reports",
+            "csv_summary": "/tmp/reports/summary.csv"
+          }
+        }
+        """
+
+        let response = try JSONDecoder().decode(StatusResponse.self, from: Data(json.utf8))
+
+        XCTAssertTrue(response.runtime.watchRunning)
+        XCTAssertEqual(response.runtime.queuedPaths, 3)
+        XCTAssertEqual(response.runtime.activeWorkers, 1)
+        XCTAssertEqual(response.runtime.maxWorkers, 1)
     }
 }

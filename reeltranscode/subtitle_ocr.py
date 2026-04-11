@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 import logging
 import shutil
+import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from reeltranscode.models import OcrSubtitleTask
+from reeltranscode.process_registry import PROCESS_REGISTRY, ShutdownRequestedError
 
 LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +70,38 @@ def ocr_image_subtitle_to_srt(task: OcrSubtitleTask, *, max_workers: int | None 
     return output_path
 
 
+def ocr_image_subtitle_to_srt_subprocess(task: OcrSubtitleTask, *, max_workers: int | None = None) -> Path:
+    command = _build_ocr_worker_command(task, max_workers=max_workers)
+
+    try:
+        result = PROCESS_REGISTRY.run(command, text=True, cwd=task.sup_path.parent)
+    except OSError as exc:
+        raise SubtitleOcrError(f"Unable to launch OCR worker: {exc}") from exc
+
+    if result.returncode != 0 and PROCESS_REGISTRY.is_stopping():
+        raise ShutdownRequestedError("OCR interrupted because service shutdown was requested")
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout).strip() or "OCR worker failed"
+        raise SubtitleOcrError(details)
+
+    output_path = Path(task.output_path)
+    if not output_path.exists():
+        raise SubtitleOcrError(f"OCR worker completed without producing an SRT file: {output_path}")
+    return output_path
+
+
+def _build_ocr_worker_command(task: OcrSubtitleTask, *, max_workers: int | None = None) -> list[str]:
+    command = [sys.executable]
+    if getattr(sys, "frozen", False):
+        command.append("ocr-worker")
+    else:
+        command.extend(["-m", "reeltranscode.cli", "ocr-worker"])
+    command.extend(["--task-json", _task_json(task)])
+    if max_workers is not None:
+        command.extend(["--max-workers", str(max_workers)])
+    return command
+
+
 def _resolve_tesseract_binary() -> str | None:
     candidates = [
         shutil.which("tesseract"),
@@ -80,3 +116,10 @@ def _resolve_tesseract_binary() -> str | None:
         if path.exists():
             return str(path)
     return None
+
+
+def _task_json(task: OcrSubtitleTask) -> str:
+    payload = asdict(task)
+    payload["sup_path"] = str(task.sup_path)
+    payload["output_path"] = str(task.output_path)
+    return json.dumps(payload, separators=(",", ":"))

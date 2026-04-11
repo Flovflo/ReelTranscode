@@ -31,12 +31,21 @@ struct DashboardView: View {
                             }
                         }
                         .buttonStyle(.borderedProminent)
+                        .disabled(model.isBusy)
                     }
-                    Text(model.serviceStatusText.isEmpty ? "No launchd status yet" : model.serviceStatusText)
-                        .font(.system(.caption, design: .monospaced))
+                    Text(model.serviceStatusText.isEmpty ? "Watch service status unavailable." : model.serviceStatusText)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .lineLimit(6)
+
+                    if !model.serviceDiagnosticsText.isEmpty {
+                        DisclosureGroup("Technical details") {
+                            Text(model.serviceDiagnosticsText)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
                 }
 
                 GroupBox("Actions") {

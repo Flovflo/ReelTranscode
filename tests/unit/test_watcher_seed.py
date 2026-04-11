@@ -222,6 +222,59 @@ def test_seed_existing_files_skips_dynamic_source_local_temp_workspace(tmp_path)
         state.close()
 
 
+def test_seed_existing_files_skips_hidden_dot_temp_media_files(tmp_path):
+    root = tmp_path / "watch"
+    root.mkdir(parents=True)
+    source_media = root / "movie.mkv"
+    hidden_temp = root / ".movie.123abc.tmp.mp4"
+    source_media.write_bytes(b"source")
+    hidden_temp.write_bytes(b"temp")
+
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {"folders": [str(root)], "allowed_extensions": [".mkv", ".mp4"]},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+        }
+    )
+    watcher, state = _make_watcher(cfg, tmp_path)
+    work_queue: queue.Queue = queue.Queue()
+
+    try:
+        queued = watcher._seed_existing_files(root, work_queue)  # noqa: SLF001 - tested behavior
+
+        assert queued == 1
+        item = work_queue.get_nowait()
+        assert item.path == source_media
+    finally:
+        state.close()
+
+
+def test_event_handler_skips_hidden_dot_temp_media_files(tmp_path):
+    root = tmp_path / "watch"
+    root.mkdir(parents=True)
+    hidden_temp = root / ".movie.123abc.tmp.mp4"
+    hidden_temp.write_bytes(b"temp")
+
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {"folders": [str(root)], "allowed_extensions": [".mp4"]},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+        }
+    )
+    watcher, state = _make_watcher(cfg, tmp_path)
+    work_queue: queue.Queue[QueuedPath] = queue.Queue()
+    handler = _MediaEventHandler(cfg, root, work_queue, watcher)
+
+    try:
+        handler.on_created(SimpleNamespace(src_path=str(hidden_temp), is_directory=False))
+
+        assert work_queue.qsize() == 0
+    finally:
+        state.close()
+
+
 def test_scanner_skips_dynamic_source_local_temp_workspace(tmp_path):
     root = tmp_path / "watch"
     source_workspace = root / ".reeltranscode-tmp"

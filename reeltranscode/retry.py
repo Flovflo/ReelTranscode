@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from reeltranscode.config import RetryConfig
+from reeltranscode.process_registry import ShutdownRequestedError
 
 T = TypeVar("T")
 
@@ -15,6 +16,8 @@ def run_with_retry(fn: Callable[[], T], retry: RetryConfig) -> T:
         attempt += 1
         try:
             return fn()
+        except ShutdownRequestedError:
+            raise
         except Exception:
             if attempt >= retry.max_attempts:
                 raise

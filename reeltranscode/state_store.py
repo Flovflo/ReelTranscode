@@ -149,13 +149,6 @@ class StateStore:
             return True, "metadata_only_change"
         return False, None
 
-    def was_stream_processed(self, stream_fp: str) -> bool:
-        row = self._conn.execute(
-            "SELECT stream_fp FROM processed_fingerprints WHERE stream_fp=?",
-            (stream_fp,),
-        ).fetchone()
-        return row is not None
-
     def mark_job_started(
         self,
         job_id: str,

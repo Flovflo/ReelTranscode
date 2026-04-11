@@ -50,11 +50,17 @@ payload = json.loads(status_path.read_text(encoding="utf-8"))
 resolved = payload["capabilities"]["resolved"]
 ffmpeg_bin = resolved["ffmpeg_bin"]
 expected = str(bin_dir / "ffmpeg_dovi_compat")
+runtime = payload.get("runtime")
 
 if ffmpeg_bin != expected:
     raise SystemExit(f"Expected packaged backend to resolve {expected}, got {ffmpeg_bin}")
 if payload["capabilities"]["dv_mp4_safe_mux"] is not True:
     raise SystemExit("Expected dv_mp4_safe_mux=true in packaged backend status output")
+if not isinstance(runtime, dict):
+    raise SystemExit("Expected packaged backend status output to include runtime metadata")
+for key in ("watch_running", "watch_paused", "queued_paths", "active_workers", "max_workers", "updated_at"):
+    if key not in runtime:
+        raise SystemExit(f"Expected runtime metadata to contain {key!r}, got {runtime!r}")
 
 print(f"Packaged backend smoke test passed: ffmpeg_bin={ffmpeg_bin}")
 PY

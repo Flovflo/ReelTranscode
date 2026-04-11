@@ -264,6 +264,72 @@ def test_pipeline_creates_missing_nested_target_directory_before_running_ffmpeg(
     assert target.exists()
 
 
+def test_pipeline_can_publish_to_output_root_and_delete_source_after_success(tmp_path: Path):
+    source = tmp_path / "watch" / "Movies" / "movie.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    target = tmp_path / "optimized" / "Movies" / "movie.mp4"
+    temp = target.parent / ".movie.tmp.mp4"
+
+    cfg = AppConfig.from_dict(
+        {
+            "output": {
+                "mode": "keep_original",
+                "output_root": str(tmp_path / "optimized"),
+                "overwrite": True,
+                "delete_original_after_success": True,
+            },
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+        }
+    )
+    state = StateStore(cfg.paths.state_db)
+    reporter = Reporter(cfg)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=reporter)
+
+    source_media = _media(source, "matroska,webm", codec_tag=None)
+    output_media = _media(temp, "mov,mp4,m4a,3gp,3g2,mj2", codec_tag="hvc1")
+    processor.analyzer = _FakeAnalyzer(source, temp, source_media, output_media)
+    processor.engine = _FakeEngine(
+        Decision(
+            strategy=Strategy.REMUX_ONLY,
+            case_label=CaseLabel.B,
+            reasons=["remux"],
+            expected_container="mp4",
+            expected_direct_play_safe=True,
+        ),
+        CompatibilityDetails(
+            container_ok=False,
+            video_ok=True,
+            audio_ok=True,
+            subtitle_ok=True,
+            dv_present=False,
+            dv_profile=None,
+            hdr10_present=False,
+            requires_container_change=True,
+            requires_audio_fix=False,
+            requires_subtitle_fix=False,
+            requires_video_transcode=False,
+            reasons=[],
+        ),
+    )
+    processor.planner = _FakePlanner(source, target, temp)
+    processor.runner = _FakeRunner()
+
+    try:
+        report = processor.process_path(source, source.parents[1], dry_run_override=False)
+    finally:
+        state.close()
+
+    assert report.status == "success"
+    assert target.exists()
+    assert not source.exists()
+
+
 def test_pipeline_uses_temp_path_volume_for_capacity_check_when_workspace_is_absent(
     tmp_path: Path,
     monkeypatch,

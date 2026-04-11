@@ -42,13 +42,17 @@ struct OnboardingView: View {
 
             GroupBox("Output") {
                 VStack(spacing: 8) {
-                    Toggle("Replace original files in place (advanced)", isOn: $model.config.replaceOriginalsInPlace)
+                    Picker("Handling", selection: $model.config.outputBehavior) {
+                        ForEach(OutputBehavior.allCases) { behavior in
+                            Text(behavior.title).tag(behavior)
+                        }
+                    }
 
-                    Text("Recommended: keep originals and publish one validated MP4 in a separate optimized folder.")
+                    Text(model.config.outputBehavior.summary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    if !model.config.replaceOriginalsInPlace {
+                    if model.config.outputBehavior.usesSeparateOutputRoot {
                         HStack {
                             Text("Optimized")
                                 .frame(width: 100, alignment: .leading)
@@ -56,6 +60,19 @@ struct OnboardingView: View {
                             Button("Browse") {
                                 if let picked = model.pickFolder() {
                                     model.config.outputRoot = picked
+                                }
+                            }
+                        }
+                    }
+
+                    if model.config.outputBehavior.usesArchiveRoot {
+                        HStack {
+                            Text("Archive")
+                                .frame(width: 100, alignment: .leading)
+                            TextField("Archive root", text: $model.config.archiveRoot)
+                            Button("Browse") {
+                                if let picked = model.pickFolder() {
+                                    model.config.archiveRoot = picked
                                 }
                             }
                         }

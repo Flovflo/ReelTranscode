@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import signal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,9 @@ import yaml
 
 from reeltranscode.analyzer import FFprobeAnalyzer
 from reeltranscode.config import AppConfig
+from reeltranscode.ocr_worker import main as ocr_worker_main
 from reeltranscode.pipeline import PipelineProcessor
+from reeltranscode.process_registry import PROCESS_REGISTRY
 from reeltranscode.reporter import Reporter
 from reeltranscode.scanner import iter_media_files
 from reeltranscode.state_store import StateStore
@@ -55,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
     validate_cfg = sub.add_parser("config-validate", help="Validate configuration file")
     validate_cfg.add_argument("--json", action="store_true", dest="json_output", help="Output machine-readable JSON")
 
+    ocr_worker_cmd = sub.add_parser("ocr-worker", help=argparse.SUPPRESS)
+    ocr_worker_cmd.add_argument("--task-json", required=True, help=argparse.SUPPRESS)
+    ocr_worker_cmd.add_argument("--max-workers", type=int, default=None, help=argparse.SUPPRESS)
+
     return parser
 
 
@@ -64,6 +71,11 @@ def main() -> None:
 
     if args.command == "config-validate":
         _run_config_validate(Path(args.config), args.json_output)
+        return
+    if args.command == "ocr-worker":
+        exit_code = ocr_worker_main(_ocr_worker_argv(args))
+        if exit_code != 0:
+            raise SystemExit(exit_code)
         return
 
     config = AppConfig.load(args.config)
@@ -100,6 +112,13 @@ def main() -> None:
         state.close()
 
 
+def _ocr_worker_argv(args: argparse.Namespace) -> list[str]:
+    argv = ["--task-json", args.task_json]
+    if args.max_workers is not None:
+        argv.extend(["--max-workers", str(args.max_workers)])
+    return argv
+
+
 def _run_batch(config: AppConfig, pipeline: PipelineProcessor, dry_run: bool, limit: int) -> None:
     files = iter_media_files(config)
     if limit > 0:
@@ -123,6 +142,8 @@ def _run_batch(config: AppConfig, pipeline: PipelineProcessor, dry_run: bool, li
 
 def _run_watch(config: AppConfig, pipeline: PipelineProcessor, dry_run: bool) -> None:
     watcher = LibraryWatcher(config, pipeline.state_store)
+    shutdown_requested = False
+    PROCESS_REGISTRY.clear_stop_request()
 
     def _process(path: Path, root: Path) -> None:
         report = pipeline.process_path(path, root, dry_run_override=dry_run)
@@ -136,7 +157,27 @@ def _run_watch(config: AppConfig, pipeline: PipelineProcessor, dry_run: bool) ->
             reason,
         )
 
-    watcher.run_forever(_process)
+    previous_handlers: dict[signal.Signals, Any] = {}
+
+    def _request_shutdown(signum: int, _frame) -> None:  # noqa: ANN001
+        nonlocal shutdown_requested
+        if shutdown_requested:
+            return
+        shutdown_requested = True
+        LOGGER.warning("Received signal %s, stopping watcher and active child processes", signum)
+        watcher.stop()
+        PROCESS_REGISTRY.request_stop()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        previous_handlers[sig] = signal.getsignal(sig)
+        signal.signal(sig, _request_shutdown)
+
+    try:
+        watcher.run_forever(_process)
+    finally:
+        PROCESS_REGISTRY.terminate_all()
+        for sig, previous in previous_handlers.items():
+            signal.signal(sig, previous)
 
 
 def _run_watch_pause(state: StateStore, paused: bool) -> None:

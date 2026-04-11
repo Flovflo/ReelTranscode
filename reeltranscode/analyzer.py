@@ -5,12 +5,12 @@ import json
 import logging
 import re
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from reeltranscode.config import AppConfig
 from reeltranscode.models import DolbyVisionEvidence, MediaInfo, StreamInfo, SubtitleTrackState
+from reeltranscode.process_registry import PROCESS_REGISTRY
 
 LOGGER = logging.getLogger(__name__)
 
@@ -108,11 +108,9 @@ class FFprobeAnalyzer:
             command = self._probe_command_for_binary(ffprobe_bin, path)
             LOGGER.debug("ffprobe command: %s", " ".join(command))
             try:
-                process = subprocess.run(
+                process = PROCESS_REGISTRY.run(
                     command,
                     text=True,
-                    capture_output=True,
-                    check=False,
                 )
             except OSError as exc:
                 errors.append(f"{ffprobe_bin}: {exc}")
@@ -329,18 +327,16 @@ class FFprobeAnalyzer:
         for mediainfo_bin in self._mediainfo_candidates():
             command = [mediainfo_bin, "--Output=JSON", str(path)]
             try:
-                process = subprocess.run(
+                process = PROCESS_REGISTRY.run(
                     command,
-                    text=True,
-                    capture_output=True,
-                    check=False,
+                    text=False,
                 )
             except OSError:
                 continue
             if process.returncode != 0:
                 continue
             try:
-                payload = json.loads(process.stdout)
+                payload = json.loads(_decode_process_output(process.stdout))
             except json.JSONDecodeError:
                 continue
             if mediainfo_bin != self.config.tooling.mediainfo_bin:
@@ -431,6 +427,14 @@ def _frame_rate_to_float(value: str | None) -> float | None:
         return float(value)
     except ValueError:
         return None
+
+
+def _decode_process_output(output: str | bytes | bytearray | None) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, str):
+        return output
+    return bytes(output).decode("utf-8", errors="replace")
 
 
 def _normalize_dolby_vision_profile(

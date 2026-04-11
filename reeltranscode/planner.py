@@ -114,7 +114,7 @@ class CommandPlanner:
             cmd.extend(["-map", "0"])
 
         if not self.config.remux.keep_attachments:
-            cmd.extend(["-map", "-0:t"])
+            cmd.extend(self._attachment_exclusion_args(media))
         if not self.config.remux.keep_chapters:
             cmd.extend(["-map_chapters", "-1"])
 
@@ -544,6 +544,13 @@ class CommandPlanner:
             output_sub_index += 1
 
         return args, exports, notes, dropped_subtitle_streams, ocr_subtitle_tasks
+
+    def _attachment_exclusion_args(self, media: MediaInfo) -> list[str]:
+        args = ["-map", "-0:t"]
+        for stream in media.streams:
+            if stream.is_attached_picture:
+                args.extend(["-map", f"-0:{stream.index}"])
+        return args
 
     def _ensure_apple_native_mp4_subtitles(self, media: MediaInfo) -> None:
         if self._target_suffix() != ".mp4":

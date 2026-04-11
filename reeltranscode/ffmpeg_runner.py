@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from reeltranscode.process_registry import PROCESS_REGISTRY, ShutdownRequestedError
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,12 +24,10 @@ class CommandResult:
 class FFmpegRunner:
     def run(self, command: list[str], cwd: Path | None = None) -> CommandResult:
         LOGGER.info("Executing: %s", " ".join(command))
-        process = subprocess.run(
+        process = PROCESS_REGISTRY.run(
             command,
             text=True,
-            capture_output=True,
-            check=False,
-            cwd=str(cwd) if cwd else None,
+            cwd=cwd,
         )
         result = CommandResult(
             command=command,
@@ -36,6 +35,8 @@ class FFmpegRunner:
             stdout=process.stdout,
             stderr=process.stderr,
         )
+        if process.returncode != 0 and PROCESS_REGISTRY.is_stopping():
+            raise ShutdownRequestedError("Transcode interrupted because service shutdown was requested")
         if process.returncode != 0:
             raise CommandFailedError(process.stderr.strip() or "ffmpeg command failed")
         return result

@@ -454,6 +454,50 @@ def test_mp4_plan_skips_aac_fallback_if_already_present():
     assert "AAC Stereo Fallback" not in cmd
 
 
+def test_mp4_plan_excludes_attached_picture_streams():
+    cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4"}})
+    media = _media(
+        "/Volumes/Media/Movies/movie_with_cover.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "pix_fmt": "yuv420p10le",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "eng"},
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 2,
+                "codec_type": "video",
+                "codec_name": "png",
+                "disposition": {"attached_pic": 1},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
+
+    assert len(media.video_streams) == 1
+    assert media.primary_video is not None
+    assert media.primary_video.index == 0
+    assert "-0:2" in plan.steps[0].command
+
+
 def test_replace_original_mode_keeps_series_tree_and_replaces_in_place():
     cfg = AppConfig.from_dict(
         {

@@ -38,6 +38,7 @@ class StreamDisposition:
     forced: bool = False
     hearing_impaired: bool = False
     captions: bool = False
+    attached_pic: bool = False
 
     @classmethod
     def from_probe(cls, raw: dict[str, Any] | None) -> "StreamDisposition":
@@ -47,6 +48,7 @@ class StreamDisposition:
             forced=bool(raw.get("forced", 0)),
             hearing_impaired=bool(raw.get("hearing_impaired", 0)),
             captions=bool(raw.get("captions", 0)),
+            attached_pic=bool(raw.get("attached_pic", 0)),
         )
 
 
@@ -131,6 +133,10 @@ class StreamInfo:
         return self.codec_type == "subtitle"
 
     @property
+    def is_attached_picture(self) -> bool:
+        return self.is_video and self.disposition.attached_pic
+
+    @property
     def is_text_subtitle(self) -> bool:
         return self.codec_name in {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text"}
 
@@ -156,7 +162,7 @@ class MediaInfo:
 
     @property
     def video_streams(self) -> list[StreamInfo]:
-        return [s for s in self.streams if s.is_video]
+        return [s for s in self.streams if s.is_video and not s.is_attached_picture]
 
     @property
     def audio_streams(self) -> list[StreamInfo]:

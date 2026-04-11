@@ -15,7 +15,8 @@ from reeltranscode.models import JobReport, JobStatus, Strategy
 from reeltranscode.planner import CommandPlanner
 from reeltranscode.reporter import Reporter
 from reeltranscode.retry import run_with_retry
-from reeltranscode.subtitle_ocr import SubtitleOcrError, ocr_image_subtitle_to_srt
+from reeltranscode.process_registry import ShutdownRequestedError
+from reeltranscode.subtitle_ocr import SubtitleOcrError, ocr_image_subtitle_to_srt_subprocess
 from reeltranscode.state_store import StateStore
 from reeltranscode.utils import atomic_replace, ensure_parent, now_utc_iso
 from reeltranscode.validator import OutputValidator
@@ -307,7 +308,7 @@ class PipelineProcessor:
                     )
                     status = JobStatus.SUCCESS
 
-        except (ProbeError, CommandFailedError, RuntimeError, OSError, SubtitleOcrError) as exc:
+        except (ProbeError, CommandFailedError, RuntimeError, OSError, SubtitleOcrError, ShutdownRequestedError) as exc:
             status = JobStatus.FAILED
             error_class = exc.__class__.__name__
             error_message = str(exc)
@@ -375,7 +376,7 @@ class PipelineProcessor:
             )
             if not task.sup_path.exists():
                 raise SubtitleOcrError(f"PGS extraction completed without creating {task.sup_path}")
-            ocr_image_subtitle_to_srt(
+            ocr_image_subtitle_to_srt_subprocess(
                 task,
                 max_workers=self.config.concurrency.max_workers,
             )

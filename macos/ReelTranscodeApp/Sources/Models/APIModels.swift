@@ -14,6 +14,48 @@ struct StatusResponse: Decodable, Sendable {
         case paths
         case runtime
     }
+
+    init(
+        apiVersion: Int,
+        summary: JobSummary,
+        latestJobs: [JobRow],
+        paths: StatusPaths,
+        runtime: RuntimeStatus
+    ) {
+        self.apiVersion = apiVersion
+        self.summary = summary
+        self.latestJobs = latestJobs
+        self.paths = paths
+        self.runtime = runtime
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let apiVersion = try container.decode(Int.self, forKey: .apiVersion)
+        let summary = try container.decode(JobSummary.self, forKey: .summary)
+        let latestJobs = try container.decodeIfPresent([JobRow].self, forKey: .latestJobs) ?? []
+        let paths = try container.decode(StatusPaths.self, forKey: .paths)
+        let runtime = try container.decodeIfPresent(RuntimeStatus.self, forKey: .runtime)
+            ?? RuntimeStatus.legacyFallback(summary: summary)
+
+        self.init(
+            apiVersion: apiVersion,
+            summary: summary,
+            latestJobs: latestJobs,
+            paths: paths,
+            runtime: runtime
+        )
+    }
+
+    func withRuntime(_ runtime: RuntimeStatus) -> StatusResponse {
+        StatusResponse(
+            apiVersion: apiVersion,
+            summary: summary,
+            latestJobs: latestJobs,
+            paths: paths,
+            runtime: runtime
+        )
+    }
 }
 
 struct JobSummary: Decodable, Sendable {
@@ -80,6 +122,35 @@ struct RuntimeStatus: Decodable, Sendable {
         case activeWorkers = "active_workers"
         case maxWorkers = "max_workers"
         case updatedAt = "updated_at"
+    }
+
+    static func legacyFallback(summary: JobSummary) -> RuntimeStatus {
+        RuntimeStatus(
+            watchRunning: summary.pending > 0 || summary.running > 0,
+            watchPaused: false,
+            queuedPaths: summary.pending,
+            activeWorkers: summary.running,
+            maxWorkers: max(summary.running, 1),
+            updatedAt: ""
+        )
+    }
+
+    func with(
+        watchRunning: Bool? = nil,
+        watchPaused: Bool? = nil,
+        queuedPaths: Int? = nil,
+        activeWorkers: Int? = nil,
+        maxWorkers: Int? = nil,
+        updatedAt: String? = nil
+    ) -> RuntimeStatus {
+        RuntimeStatus(
+            watchRunning: watchRunning ?? self.watchRunning,
+            watchPaused: watchPaused ?? self.watchPaused,
+            queuedPaths: queuedPaths ?? self.queuedPaths,
+            activeWorkers: activeWorkers ?? self.activeWorkers,
+            maxWorkers: maxWorkers ?? self.maxWorkers,
+            updatedAt: updatedAt ?? self.updatedAt
+        )
     }
 }
 

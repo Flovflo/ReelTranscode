@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from reeltranscode.utils import is_runtime_temp_path, path_contains, paths_overlap
+from reeltranscode.utils import is_runtime_temp_path, is_transient_media_path, path_contains, paths_overlap
 
 
 @dataclass(slots=True)
@@ -305,7 +305,7 @@ class AppConfig:
 
     def is_excluded_from_watch(self, path: Path) -> bool:
         candidate = path.expanduser().resolve()
-        if is_runtime_temp_path(candidate):
+        if is_runtime_temp_path(candidate) or is_transient_media_path(candidate):
             return True
         for protected_path in self.managed_paths().values():
             if path_contains(protected_path, candidate):

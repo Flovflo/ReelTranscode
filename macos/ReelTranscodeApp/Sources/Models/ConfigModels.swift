@@ -30,9 +30,78 @@ enum PerformanceProfile: String, CaseIterable, Identifiable {
     }
 }
 
+enum OutputBehavior: String, CaseIterable, Identifiable, Equatable, Sendable {
+    case keepOriginals
+    case moveToOptimized
+    case replaceInPlace
+    case archiveOriginals
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .keepOriginals:
+            return "Keep Originals"
+        case .moveToOptimized:
+            return "Move To Optimized"
+        case .replaceInPlace:
+            return "Replace In Place"
+        case .archiveOriginals:
+            return "Archive Originals"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .keepOriginals:
+            return "Write the optimized MP4 to a separate library and keep the source untouched."
+        case .moveToOptimized:
+            return "Write the optimized MP4 to a separate library, then delete the source only after validation succeeds."
+        case .replaceInPlace:
+            return "Replace the source file in its original folder after a validated publish."
+        case .archiveOriginals:
+            return "Publish the optimized MP4 and move the untouched source into an archive folder."
+        }
+    }
+
+    var usesSeparateOutputRoot: Bool {
+        self != .replaceInPlace
+    }
+
+    var usesArchiveRoot: Bool {
+        self == .archiveOriginals
+    }
+
+    var yamlMode: String {
+        switch self {
+        case .keepOriginals, .moveToOptimized:
+            return "keep_original"
+        case .replaceInPlace:
+            return "replace_original"
+        case .archiveOriginals:
+            return "archive_original"
+        }
+    }
+
+    var deleteOriginalAfterSuccess: Bool {
+        self == .moveToOptimized
+    }
+
+    static func fromExported(mode: String, deleteOriginalAfterSuccess: Bool) -> OutputBehavior {
+        switch mode {
+        case "replace_original":
+            return .replaceInPlace
+        case "archive_original":
+            return .archiveOriginals
+        default:
+            return deleteOriginalAfterSuccess ? .moveToOptimized : .keepOriginals
+        }
+    }
+}
+
 struct ConfigDocument {
     var watchFolders: [String] = []
-    var replaceOriginalsInPlace: Bool = false
+    var outputBehavior: OutputBehavior = .keepOriginals
     var outputRoot: String = "/Volumes/Media-Optimized"
     var archiveRoot: String = "/Volumes/Media-Archive"
     var stateDB: String = AppPaths.appSupportDirectory.appendingPathComponent("state/reeltranscode.db").path
@@ -56,7 +125,6 @@ struct ConfigDocument {
     func toYAML() -> String {
         let concurrency = profile.appliedConcurrency()
         let retry = profile.appliedRetry()
-        let outputMode = replaceOriginalsInPlace ? "replace_original" : "keep_original"
 
         let watchFoldersYAML = watchFolders.map { "    - \($0)" }.joined(separator: "\n")
         let optionalToolLines = [
@@ -116,11 +184,11 @@ struct ConfigDocument {
           max_4k_fps: 60
         
         output:
-          mode: \(outputMode)
+          mode: \(outputBehavior.yamlMode)
           output_root: \(outputRoot)
           archive_root: \(archiveRoot)
           overwrite: false
-          delete_original_after_success: false
+          delete_original_after_success: \(outputBehavior.deleteOriginalAfterSuccess ? "true" : "false")
         
         concurrency:
           max_workers: \(max(1, maxWorkers))
@@ -162,7 +230,12 @@ struct ConfigDocument {
         }
 
         if let output = config["output"]?.objectValue {
-            doc.replaceOriginalsInPlace = output["mode"]?.stringValue == "replace_original"
+            let mode = output["mode"]?.stringValue ?? "keep_original"
+            let deleteOriginalAfterSuccess = output["delete_original_after_success"]?.boolValue ?? false
+            doc.outputBehavior = .fromExported(
+                mode: mode,
+                deleteOriginalAfterSuccess: deleteOriginalAfterSuccess
+            )
             doc.outputRoot = output["output_root"]?.stringValue ?? doc.outputRoot
             doc.archiveRoot = output["archive_root"]?.stringValue ?? doc.archiveRoot
         }
@@ -196,6 +269,43 @@ struct ConfigDocument {
             }
         }
 
+        doc.normalizeManagedPathsForPersistence()
         return doc
+    }
+
+    mutating func normalizeManagedPathsForPersistence() {
+        stateDB = Self.normalizedManagedPath(
+            stateDB,
+            defaultURL: AppPaths.appSupportDirectory.appendingPathComponent("state/reeltranscode.db")
+        )
+        reportsDir = Self.normalizedManagedPath(
+            reportsDir,
+            defaultURL: AppPaths.appSupportDirectory.appendingPathComponent("reports")
+        )
+        csvSummary = Self.normalizedManagedPath(
+            csvSummary,
+            defaultURL: AppPaths.appSupportDirectory.appendingPathComponent("reports/summary.csv")
+        )
+        tempDir = Self.normalizedManagedPath(
+            tempDir,
+            defaultURL: AppPaths.appSupportDirectory.appendingPathComponent("tmp")
+        )
+    }
+
+    private static func normalizedManagedPath(_ rawValue: String, defaultURL: URL) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return defaultURL.standardizedFileURL.path
+        }
+
+        let expanded = NSString(string: trimmed).expandingTildeInPath
+        if expanded.hasPrefix("/") {
+            return URL(fileURLWithPath: expanded).standardizedFileURL.path
+        }
+
+        return AppPaths.appSupportDirectory
+            .appendingPathComponent(expanded)
+            .standardizedFileURL
+            .path
     }
 }

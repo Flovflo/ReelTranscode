@@ -3,6 +3,8 @@ import Foundation
 enum BackendRunnerError: LocalizedError {
     case executableNotFound(searchedPaths: [String])
     case nonZeroExit(code: Int32, stderr: String)
+    case emptyJSONOutput(command: [String])
+    case invalidJSONOutput(command: [String], underlying: String)
 
     var errorDescription: String? {
         switch self {
@@ -13,11 +15,19 @@ enum BackendRunnerError: LocalizedError {
             return "ReelTranscodeCore executable not found. Checked: \(searchedPaths.joined(separator: ", "))"
         case let .nonZeroExit(code, stderr):
             return "Backend command failed (\(code)): \(stderr)"
+        case let .emptyJSONOutput(command):
+            return "Backend command returned no JSON output: \(Self.formattedCommand(command))"
+        case let .invalidJSONOutput(command, underlying):
+            return "Backend command returned unreadable JSON: \(Self.formattedCommand(command)). \(underlying)"
         }
+    }
+
+    private static func formattedCommand(_ command: [String]) -> String {
+        command.joined(separator: " ")
     }
 }
 
-struct CommandResult {
+struct CommandResult: Sendable {
     let stdout: String
     let stderr: String
     let exitCode: Int32
@@ -42,8 +52,7 @@ actor BackendRunner {
 
     func runJSON<T: Decodable>(arguments: [String], as type: T.Type) async throws -> T {
         let result = try await run(arguments: arguments)
-        let data = Data(result.stdout.utf8)
-        return try JSONDecoder().decode(T.self, from: data)
+        return try Self.decodeJSON(result.stdout, arguments: arguments, as: type)
     }
 
     static func bundleEmbeddedExecutableURL() -> URL? {
@@ -83,8 +92,8 @@ actor BackendRunner {
 
     private static func candidateEmbeddedExecutableURLs() -> [URL] {
         [
-            bundleEmbeddedExecutableURL(),
-            appSupportEmbeddedExecutableURL()
+            appSupportEmbeddedExecutableURL(),
+            bundleEmbeddedExecutableURL()
         ].compactMap { $0 }
     }
 
@@ -124,10 +133,10 @@ actor BackendRunner {
             candidates.append(url)
         }
 
+        appendCandidate(AppPaths.runtimeBinDirectory.appendingPathComponent(toolName))
         appendCandidate(Bundle.main.resourceURL?
             .appendingPathComponent("bin", isDirectory: true)
             .appendingPathComponent(toolName))
-        appendCandidate(AppPaths.runtimeBinDirectory.appendingPathComponent(toolName))
 
         for path in [
             "/opt/homebrew/bin/\(toolName)",
@@ -167,10 +176,10 @@ actor BackendRunner {
         }
 
         if let firstName = toolNames.first {
+            appendCandidate(AppPaths.runtimeBinDirectory.appendingPathComponent(firstName))
             appendCandidate(Bundle.main.resourceURL?
                 .appendingPathComponent("bin", isDirectory: true)
                 .appendingPathComponent(firstName))
-            appendCandidate(AppPaths.runtimeBinDirectory.appendingPathComponent(firstName))
         }
 
         for toolName in toolNames {
@@ -235,7 +244,7 @@ actor BackendRunner {
             process.arguments = arguments
             process.standardOutput = stdoutPipe
             process.standardError = stderrPipe
-            process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+            process.currentDirectoryURL = Self.defaultWorkingDirectoryURL()
 
             process.terminationHandler = { proc in
                 let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
@@ -257,5 +266,26 @@ actor BackendRunner {
                 continuation.resume(throwing: error)
             }
         }
+    }
+
+    static func decodeJSON<T: Decodable>(_ stdout: String, arguments: [String], as type: T.Type) throws -> T {
+        let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw BackendRunnerError.emptyJSONOutput(command: arguments)
+        }
+
+        do {
+            return try JSONDecoder().decode(T.self, from: Data(trimmed.utf8))
+        } catch {
+            throw BackendRunnerError.invalidJSONOutput(command: arguments, underlying: error.localizedDescription)
+        }
+    }
+
+    private static func defaultWorkingDirectoryURL() -> URL {
+        let appSupport = AppPaths.appSupportDirectory
+        if FileManager.default.fileExists(atPath: appSupport.path) {
+            return appSupport
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
     }
 }
