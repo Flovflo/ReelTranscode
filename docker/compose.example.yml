@@ -1,0 +1,17 @@
+services:
+  reeltranscode:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: reeltranscode:local
+    user: "${UID:-1000}:${GID:-1000}"
+    command: ["--config", "/config/reeltranscode.yaml", "watch"]
+    volumes:
+      - ./reeltranscode.local.yaml:/config/reeltranscode.yaml:ro
+      - /srv/media/watch:/library/watch
+      - /srv/media/optimized:/library/optimized
+      - /srv/media/archive:/library/archive
+      - reeltranscode-workspace:/workspace
+
+volumes:
+  reeltranscode-workspace:

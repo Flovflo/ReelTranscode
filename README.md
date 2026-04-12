@@ -72,11 +72,73 @@ reeltranscode --config config/reeltranscode.yaml status --json --limit 50
 reeltranscode --config config/reeltranscode.yaml config-validate --json
 ```
 
+### Lancer sans GUI
+
+Mode dev depuis le repo:
+
+```bash
+source .venv/bin/activate
+reeltranscode --config config/reeltranscode.yaml watch
+```
+
+Mode runtime package sans ouvrir l'app macOS:
+
+```bash
+"$HOME/Library/Application Support/ReelTranscode/runtime/ReelTranscodeCore/ReelTranscodeCore" \
+  --config "$HOME/Library/Application Support/ReelTranscode/config/reeltranscode.yaml" watch
+```
+
+Mode service de fond via `launchd`:
+
+```bash
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.reelfin.reeltranscode.watch.plist"
+launchctl kickstart -k "gui/$(id -u)/com.reelfin.reeltranscode.watch"
+launchctl print "gui/$(id -u)/com.reelfin.reeltranscode.watch"
+tail -f "$HOME/Library/Application Support/ReelTranscode/logs/watch.stdout.log"
+tail -f "$HOME/Library/Application Support/ReelTranscode/logs/watch.stderr.log"
+```
+
+Le runtime package lit sa config dans `~/Library/Application Support/ReelTranscode/config/reeltranscode.yaml`
+et ecrit les logs du watcher dans `~/Library/Application Support/ReelTranscode/logs/`.
+
+### Linux / Docker
+
+Image locale:
+
+```bash
+docker build -t reeltranscode:local .
+docker run --rm \
+  -v "$PWD/docker/reeltranscode.docker.yaml:/config/reeltranscode.yaml:ro" \
+  -v /srv/media/watch:/library/watch \
+  -v /srv/media/optimized:/library/optimized \
+  -v /srv/media/archive:/library/archive \
+  -v reeltranscode-workspace:/workspace \
+  reeltranscode:local --config /config/reeltranscode.yaml status --json --limit 20
+```
+
+Mode watch avec l'exemple `docker/compose.example.yml`:
+
+```bash
+cd docker
+cp reeltranscode.docker.yaml reeltranscode.local.yaml
+docker compose -f compose.example.yml run --rm reeltranscode --config /config/reeltranscode.yaml config-validate --json
+```
+
+Le conteneur embarque `ffmpeg`, `ffprobe`, `mediainfo` et `tesseract`.
+La voie Dolby Vision safe reste optionnelle et n'est active que si `DoViMuxer`, `MP4Box` et `mp4muxer` sont aussi fournis dans l'environnement.
+
 ### App macOS
 
 ```bash
 xcodegen generate --spec macos/ReelTranscodeApp/project.yml
 xcodebuild -project macos/ReelTranscodeApp/ReelTranscodeApp.xcodeproj -scheme ReelTranscodeApp -destination 'platform=macOS' test
+```
+
+Boucle locale Codex / shell:
+
+```bash
+./script/build_and_run.sh
+./script/build_and_run.sh --verify
 ```
 
 ### Build DMG local

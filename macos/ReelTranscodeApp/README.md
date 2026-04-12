@@ -15,6 +15,16 @@ xcodebuild -project macos/ReelTranscodeApp/ReelTranscodeApp.xcodeproj -scheme Re
 xcodebuild -project macos/ReelTranscodeApp/ReelTranscodeApp.xcodeproj -scheme ReelTranscodeApp -destination 'platform=macOS' test
 ```
 
+## Local run loop
+
+```bash
+./script/build_and_run.sh
+./script/build_and_run.sh --verify
+./script/build_and_run.sh --logs
+```
+
+Le script cherche un vrai Xcode avant de construire l'app, regenere le projet via `xcodegen`, puis relance proprement `ReelTranscodeApp`.
+
 ## Runtime assets
 
 ```bash

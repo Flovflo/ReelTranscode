@@ -294,9 +294,10 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
 			};
 			buildConfigurationList = B87F6B883DE905F81E692B8B /* Build configuration list for PBXProject "ReelTranscodeApp" */;
-			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -306,6 +307,7 @@
 			mainGroup = 2C8B6D5BF1FBF0CBD84542D6;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
+			productRefGroup = F9E25FB7726C2D27E0148028 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (

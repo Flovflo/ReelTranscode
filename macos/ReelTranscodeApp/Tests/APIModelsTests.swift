@@ -52,6 +52,17 @@ final class APIModelsTests: XCTestCase {
             "reports_dir": "/tmp/reports",
             "csv_summary": "/tmp/reports/summary.csv"
           },
+          "capabilities": {
+            "dv_mp4_safe_mux": true,
+            "missing_tools": [],
+            "resolved": {
+              "ffmpeg_bin": "/tmp/bin/ffmpeg",
+              "dovi_muxer_bin": "/tmp/bin/DoViMuxer",
+              "mp4box_bin": "/tmp/bin/MP4Box",
+              "mediainfo_bin": "/tmp/bin/mediainfo",
+              "mp4muxer_bin": "/tmp/bin/mp4muxer"
+            }
+          },
           "runtime": {
             "watch_running": true,
             "watch_paused": false,
@@ -69,6 +80,8 @@ final class APIModelsTests: XCTestCase {
         XCTAssertEqual(response.latestJobs.first?.jobID, "abc")
         XCTAssertTrue(response.runtime.watchRunning)
         XCTAssertEqual(response.runtime.queuedPaths, 12)
+        XCTAssertTrue(response.capabilities.dvMP4SafeMux)
+        XCTAssertEqual(response.capabilities.resolved.ffmpegBin, "/tmp/bin/ffmpeg")
     }
 
     func testStatusResponseDecodingFallsBackWhenLegacyRuntimeIsMissing() throws {
@@ -98,5 +111,6 @@ final class APIModelsTests: XCTestCase {
         XCTAssertEqual(response.runtime.queuedPaths, 3)
         XCTAssertEqual(response.runtime.activeWorkers, 1)
         XCTAssertEqual(response.runtime.maxWorkers, 1)
+        XCTAssertFalse(response.capabilities.dvMP4SafeMux)
     }
 }

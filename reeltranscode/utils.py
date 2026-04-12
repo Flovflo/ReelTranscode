@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import errno
 import logging
 import os
 import shutil
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,6 +16,12 @@ if TYPE_CHECKING:
 
 RUNTIME_TEMP_DIRNAME = ".reeltranscode-tmp"
 TRANSIENT_MEDIA_MARKERS = (".tmp.", ".part.", ".partial.")
+
+
+@dataclass(slots=True)
+class PublishResult:
+    used_cross_device_fallback: bool
+    staged_path: Path | None = None
 
 
 def setup_logging(config: AppConfig) -> None:
@@ -114,12 +122,61 @@ def inode_identity(path: Path) -> tuple[int, int] | None:
     return (stat.st_dev, stat.st_ino)
 
 
-def atomic_replace(src: Path, dst: Path) -> None:
+def atomic_replace(src: Path, dst: Path) -> PublishResult:
     ensure_parent(dst)
     try:
         os.replace(src, dst)
+        _fsync_parent_dir(dst.parent)
+        return PublishResult(used_cross_device_fallback=False, staged_path=dst)
     except OSError as exc:
         if exc.errno != errno.EXDEV:
             raise
-        # Cross-device replace is not atomic; fallback to move to support external volumes.
-        shutil.move(str(src), str(dst))
+        # Cross-device publish is staged onto the destination volume first so the final
+        # switch remains an atomic replace local to the target filesystem.
+        staging_path = dst.parent / f".{dst.name}.{uuid.uuid4().hex[:10]}.publish"
+        try:
+            shutil.copy2(str(src), str(staging_path))
+            if staging_path.stat().st_size != src.stat().st_size:
+                raise OSError(errno.EIO, f"Cross-device staging copy size mismatch for {dst}")
+            _fsync_file(staging_path)
+            os.replace(staging_path, dst)
+            _fsync_parent_dir(dst.parent)
+        except Exception:
+            if staging_path.exists():
+                try:
+                    staging_path.unlink()
+                except OSError:
+                    pass
+            raise
+        finally:
+            if staging_path.exists():
+                try:
+                    staging_path.unlink()
+                except OSError:
+                    pass
+
+        if src.exists():
+            src.unlink()
+        return PublishResult(used_cross_device_fallback=True, staged_path=dst)
+
+
+def _fsync_file(path: Path) -> None:
+    try:
+        with path.open("rb") as handle:
+            os.fsync(handle.fileno())
+    except OSError:
+        return
+
+
+def _fsync_parent_dir(path: Path) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)

@@ -1,0 +1,16 @@
+.git
+.github
+.pytest_cache
+.venv
+__pycache__
+*.pyc
+build
+dist
+optimized
+tmp
+state
+reports
+archive
+macos/ReelTranscodeApp/Resources/runtime
+macos/ReelTranscodeApp/Resources/bin
+macos/ReelTranscodeApp/Resources/lib

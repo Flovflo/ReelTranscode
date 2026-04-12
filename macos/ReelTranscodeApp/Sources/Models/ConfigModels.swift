@@ -125,100 +125,124 @@ struct ConfigDocument {
     func toYAML() -> String {
         let concurrency = profile.appliedConcurrency()
         let retry = profile.appliedRetry()
+        var tooling: [String: Any] = [
+            "ffmpeg_bin": ffmpegBin,
+            "ffprobe_bin": ffprobeBin,
+        ]
+        if let doviMuxerBin = normalizedOptionalPath(doviMuxerBin) {
+            tooling["dovi_muxer_bin"] = doviMuxerBin
+        }
+        if let mp4boxBin = normalizedOptionalPath(mp4boxBin) {
+            tooling["mp4box_bin"] = mp4boxBin
+        }
+        if let mediainfoBin = normalizedOptionalPath(mediainfoBin) {
+            tooling["mediainfo_bin"] = mediainfoBin
+        }
+        if let mp4muxerBin = normalizedOptionalPath(mp4muxerBin) {
+            tooling["mp4muxer_bin"] = mp4muxerBin
+        }
 
-        let watchFoldersYAML = watchFolders.map { "    - \($0)" }.joined(separator: "\n")
-        let optionalToolLines = [
-            doviMuxerBin.isEmpty ? nil : "  dovi_muxer_bin: \(doviMuxerBin)",
-            mp4boxBin.isEmpty ? nil : "  mp4box_bin: \(mp4boxBin)",
-            mediainfoBin.isEmpty ? nil : "  mediainfo_bin: \(mediainfoBin)",
-            mp4muxerBin.isEmpty ? nil : "  mp4muxer_bin: \(mp4muxerBin)"
-        ].compactMap { $0 }.joined(separator: "\n")
+        let payload: [String: Any] = [
+            "dry_run": false,
+            "watch": [
+                "folders": normalizedWatchFolders(),
+                "recursive": true,
+                "allowed_extensions": [".mkv", ".mp4", ".mov", ".m4v", ".ts", ".m2ts"],
+                "stable_wait_seconds": 300,
+                "stable_checks": 3,
+                "poll_interval_seconds": 10,
+            ],
+            "remux": [
+                "preferred_container": "mp4",
+                "faststart": true,
+                "keep_chapters": true,
+                "keep_attachments": false,
+            ],
+            "audio": [
+                "preferred_codec_multichannel": "eac3",
+                "preferred_codec_stereo": "aac",
+                "fallback_codec": "ac3",
+                "max_channels": 8,
+                "preferred_languages": ["fra", "eng"],
+                "keep_original_compatible_tracks": true,
+                "ensure_aac_fallback_stereo_when_missing": true,
+            ],
+            "subtitles": [
+                "mode": "convert_or_externalize",
+                "convert_text_to_mov_text": true,
+                "external_subtitle_format": "srt",
+                "preserve_forced_only_when_needed": false,
+                "ocr_image_subtitles": true,
+                "drop_incompatible_image_subtitles": false,
+            ],
+            "dolby_vision": [
+                "preserve_when_safe": true,
+                "safe_profiles": ["8.1"],
+                "remux_dv_from_mkv_to_mp4_is_safe": false,
+                "fragile_fallback": "preserve_hdr10",
+            ],
+            "video": [
+                "preferred_codec": "hevc",
+                "fallback_codec": "h264",
+                "force_cfr": false,
+                "keyframe_interval_seconds": 2,
+                "hevc_tag": "hvc1",
+                "max_4k_fps": 60,
+            ],
+            "output": [
+                "mode": outputBehavior.yamlMode,
+                "output_root": outputRoot,
+                "archive_root": archiveRoot,
+                "overwrite": false,
+                "delete_original_after_success": outputBehavior.deleteOriginalAfterSuccess,
+            ],
+            "concurrency": [
+                "max_workers": max(1, maxWorkers),
+                "io_nice_sleep_seconds": concurrency.ioNiceSleep,
+            ],
+            "retry": [
+                "max_attempts": retry.maxAttempts,
+                "backoff_initial_seconds": retry.initialBackoff,
+                "backoff_max_seconds": retry.maxBackoff,
+            ],
+            "paths": [
+                "state_db": stateDB,
+                "reports_dir": reportsDir,
+                "csv_summary": csvSummary,
+                "temp_dir": tempDir,
+            ],
+            "tooling": tooling,
+            "validation": [
+                "verify_duration_tolerance_seconds": 2.0,
+                "verify_stream_count_delta_max": 4,
+                "run_post_ffprobe": true,
+                "require_dv_preservation": true,
+            ],
+            "logging": [
+                "level": "INFO",
+                "json_logs": false,
+            ],
+        ]
 
-        return """
-        dry_run: false
-        
-        watch:
-          folders:
-        \(watchFoldersYAML.isEmpty ? "    - /Volumes/Media" : watchFoldersYAML)
-          recursive: true
-          allowed_extensions: [.mkv, .mp4, .mov, .m4v, .ts, .m2ts]
-          stable_wait_seconds: 300
-          stable_checks: 3
-          poll_interval_seconds: 10
-        
-        remux:
-          preferred_container: mp4
-          faststart: true
-          keep_chapters: true
-          keep_attachments: false
-        
-        audio:
-          preferred_codec_multichannel: eac3
-          preferred_codec_stereo: aac
-          fallback_codec: ac3
-          max_channels: 8
-          preferred_languages: [fra, eng]
-          keep_original_compatible_tracks: true
-          ensure_aac_fallback_stereo_when_missing: true
-        
-        subtitles:
-          mode: convert_or_externalize
-          convert_text_to_mov_text: true
-          external_subtitle_format: srt
-          preserve_forced_only_when_needed: false
-          ocr_image_subtitles: true
-          drop_incompatible_image_subtitles: false
-        
-        dolby_vision:
-          preserve_when_safe: true
-          safe_profiles: ["8.1"]
-          remux_dv_from_mkv_to_mp4_is_safe: false
-          fragile_fallback: preserve_hdr10
-        
-        video:
-          preferred_codec: hevc
-          fallback_codec: h264
-          force_cfr: false
-          keyframe_interval_seconds: 2
-          hevc_tag: hvc1
-          max_4k_fps: 60
-        
-        output:
-          mode: \(outputBehavior.yamlMode)
-          output_root: \(outputRoot)
-          archive_root: \(archiveRoot)
-          overwrite: false
-          delete_original_after_success: \(outputBehavior.deleteOriginalAfterSuccess ? "true" : "false")
-        
-        concurrency:
-          max_workers: \(max(1, maxWorkers))
-          io_nice_sleep_seconds: \(concurrency.ioNiceSleep)
-        
-        retry:
-          max_attempts: \(retry.maxAttempts)
-          backoff_initial_seconds: \(retry.initialBackoff)
-          backoff_max_seconds: \(retry.maxBackoff)
-        
-        paths:
-          state_db: \(stateDB)
-          reports_dir: \(reportsDir)
-          csv_summary: \(csvSummary)
-          temp_dir: \(tempDir)
-        
-        tooling:
-          ffmpeg_bin: \(ffmpegBin)
-          ffprobe_bin: \(ffprobeBin)\(optionalToolLines.isEmpty ? "" : "\n\(optionalToolLines)")
-        
-        validation:
-          verify_duration_tolerance_seconds: 2.0
-          verify_stream_count_delta_max: 4
-          run_post_ffprobe: true
-          require_dv_preservation: true
+        let data: Data
+        do {
+            data = try JSONSerialization.data(
+                withJSONObject: payload,
+                options: [.prettyPrinted, .sortedKeys]
+            )
+        } catch {
+            preconditionFailure("ConfigDocument serialization failed unexpectedly: \(error)")
+        }
+        return String(decoding: data, as: UTF8.self) + "\n"
+    }
 
-        logging:
-          level: INFO
-          json_logs: false
-        """
+    private func normalizedWatchFolders() -> [String] {
+        watchFolders.isEmpty ? ["/Volumes/Media"] : watchFolders
+    }
+
+    private func normalizedOptionalPath(_ rawValue: String) -> String? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     static func fromExportedConfig(_ config: [String: JSONValue]) -> ConfigDocument {

@@ -1,0 +1,93 @@
+dry_run: false
+
+watch:
+  folders:
+    - /library/watch
+  recursive: true
+  allowed_extensions:
+    - .mkv
+    - .mp4
+    - .mov
+    - .m4v
+    - .ts
+    - .m2ts
+  stable_wait_seconds: 300
+  stable_checks: 3
+  poll_interval_seconds: 10
+
+remux:
+  preferred_container: mp4
+  faststart: true
+  keep_chapters: true
+  keep_attachments: false
+
+audio:
+  preferred_codec_multichannel: eac3
+  preferred_codec_stereo: aac
+  fallback_codec: ac3
+  max_channels: 8
+  preferred_languages:
+    - fra
+    - eng
+  keep_original_compatible_tracks: true
+  ensure_aac_fallback_stereo_when_missing: true
+
+subtitles:
+  mode: convert_or_externalize
+  convert_text_to_mov_text: true
+  external_subtitle_format: srt
+  preserve_forced_only_when_needed: false
+  ocr_image_subtitles: true
+  drop_incompatible_image_subtitles: false
+
+dolby_vision:
+  preserve_when_safe: true
+  safe_profiles:
+    - "8.1"
+  remux_dv_from_mkv_to_mp4_is_safe: false
+  fragile_fallback: preserve_hdr10
+
+video:
+  preferred_codec: hevc
+  fallback_codec: h264
+  force_cfr: false
+  keyframe_interval_seconds: 2
+  hevc_tag: hvc1
+  max_4k_fps: 60
+
+output:
+  mode: keep_original
+  output_root: /library/optimized
+  archive_root: /library/archive
+  overwrite: false
+  delete_original_after_success: false
+
+concurrency:
+  max_workers: 2
+  io_nice_sleep_seconds: 0.0
+
+retry:
+  max_attempts: 3
+  backoff_initial_seconds: 5.0
+  backoff_max_seconds: 90.0
+
+paths:
+  state_db: /workspace/state/reeltranscode.db
+  reports_dir: /workspace/reports
+  csv_summary: /workspace/reports/summary.csv
+  temp_dir: /workspace/tmp
+
+tooling:
+  ffmpeg_bin: /usr/bin/ffmpeg
+  ffprobe_bin: /usr/bin/ffprobe
+  mediainfo_bin: /usr/bin/mediainfo
+
+validation:
+  verify_duration_tolerance_seconds: 2.0
+  verify_stream_count_delta_max: 4
+  run_post_ffprobe: true
+  require_dv_preservation: true
+
+logging:
+  level: INFO
+  json_logs: false

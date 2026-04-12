@@ -6,6 +6,7 @@ struct StatusResponse: Decodable, Sendable {
     let latestJobs: [JobRow]
     let paths: StatusPaths
     let runtime: RuntimeStatus
+    let capabilities: CapabilityStatus
 
     enum CodingKeys: String, CodingKey {
         case apiVersion = "api_version"
@@ -13,6 +14,7 @@ struct StatusResponse: Decodable, Sendable {
         case latestJobs = "latest_jobs"
         case paths
         case runtime
+        case capabilities
     }
 
     init(
@@ -20,13 +22,15 @@ struct StatusResponse: Decodable, Sendable {
         summary: JobSummary,
         latestJobs: [JobRow],
         paths: StatusPaths,
-        runtime: RuntimeStatus
+        runtime: RuntimeStatus,
+        capabilities: CapabilityStatus
     ) {
         self.apiVersion = apiVersion
         self.summary = summary
         self.latestJobs = latestJobs
         self.paths = paths
         self.runtime = runtime
+        self.capabilities = capabilities
     }
 
     init(from decoder: Decoder) throws {
@@ -37,13 +41,16 @@ struct StatusResponse: Decodable, Sendable {
         let paths = try container.decode(StatusPaths.self, forKey: .paths)
         let runtime = try container.decodeIfPresent(RuntimeStatus.self, forKey: .runtime)
             ?? RuntimeStatus.legacyFallback(summary: summary)
+        let capabilities = try container.decodeIfPresent(CapabilityStatus.self, forKey: .capabilities)
+            ?? .legacyFallback()
 
         self.init(
             apiVersion: apiVersion,
             summary: summary,
             latestJobs: latestJobs,
             paths: paths,
-            runtime: runtime
+            runtime: runtime,
+            capabilities: capabilities
         )
     }
 
@@ -53,7 +60,8 @@ struct StatusResponse: Decodable, Sendable {
             summary: summary,
             latestJobs: latestJobs,
             paths: paths,
-            runtime: runtime
+            runtime: runtime,
+            capabilities: capabilities
         )
     }
 }
@@ -151,6 +159,48 @@ struct RuntimeStatus: Decodable, Sendable {
             maxWorkers: maxWorkers ?? self.maxWorkers,
             updatedAt: updatedAt ?? self.updatedAt
         )
+    }
+}
+
+struct CapabilityStatus: Decodable, Sendable {
+    let dvMP4SafeMux: Bool
+    let missingTools: [String]
+    let resolved: ResolvedToolchain
+
+    enum CodingKeys: String, CodingKey {
+        case dvMP4SafeMux = "dv_mp4_safe_mux"
+        case missingTools = "missing_tools"
+        case resolved
+    }
+
+    static func legacyFallback() -> CapabilityStatus {
+        CapabilityStatus(
+            dvMP4SafeMux: false,
+            missingTools: [],
+            resolved: ResolvedToolchain(
+                ffmpegBin: "",
+                doviMuxerBin: nil,
+                mp4boxBin: nil,
+                mediainfoBin: nil,
+                mp4muxerBin: nil
+            )
+        )
+    }
+}
+
+struct ResolvedToolchain: Decodable, Sendable {
+    let ffmpegBin: String
+    let doviMuxerBin: String?
+    let mp4boxBin: String?
+    let mediainfoBin: String?
+    let mp4muxerBin: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ffmpegBin = "ffmpeg_bin"
+        case doviMuxerBin = "dovi_muxer_bin"
+        case mp4boxBin = "mp4box_bin"
+        case mediainfoBin = "mediainfo_bin"
+        case mp4muxerBin = "mp4muxer_bin"
     }
 }
 

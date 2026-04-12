@@ -16,9 +16,18 @@ struct ReelTranscodeMacApp: App {
         .commands {
             CommandMenu("ReelTranscode") {
                 Button("Refresh Status") {
-                    Task { await model.refreshStatus() }
+                    Task { await model.refreshAll(reportErrors: true) }
                 }
                 .keyboardShortcut("r", modifiers: [.command])
+
+                Button(model.isServiceRunning ? "Stop Watch Service" : "Start Watch Service") {
+                    if model.isServiceRunning {
+                        model.stopWatchService()
+                    } else {
+                        model.startWatchService()
+                    }
+                }
+                .keyboardShortcut(".", modifiers: [.command, .shift])
 
                 Button("Save Config") {
                     Task {

@@ -9,9 +9,23 @@ final class ConfigModelsTests: XCTestCase {
 
         let yaml = config.toYAML()
 
-        XCTAssertTrue(yaml.contains("mode: keep_original"))
-        XCTAssertTrue(yaml.contains("output_root: /Volumes/Optimized"))
-        XCTAssertTrue(yaml.contains("delete_original_after_success: true"))
+        XCTAssertTrue(yaml.contains("\"mode\" : \"keep_original\""))
+        XCTAssertTrue(yaml.contains("\"output_root\" : \"/Volumes/Optimized\""))
+        XCTAssertTrue(yaml.contains("\"delete_original_after_success\" : true"))
+    }
+
+    func testToYAMLSerializesReservedCharactersInPathsSafely() throws {
+        var config = ConfigDocument()
+        config.watchFolders = ["/Volumes/Movies & Series"]
+        config.outputRoot = "/Volumes/Media:Optimized/Movies \"4K\""
+
+        let yaml = config.toYAML()
+        let object = try JSONSerialization.jsonObject(with: Data(yaml.utf8)) as? [String: Any]
+        let watch = object?["watch"] as? [String: Any]
+        let output = object?["output"] as? [String: Any]
+
+        XCTAssertEqual((watch?["folders"] as? [String])?.first, "/Volumes/Movies & Series")
+        XCTAssertEqual(output?["output_root"] as? String, "/Volumes/Media:Optimized/Movies \"4K\"")
     }
 
     func testFromExportedConfigMapsMoveToOptimizedBehavior() {

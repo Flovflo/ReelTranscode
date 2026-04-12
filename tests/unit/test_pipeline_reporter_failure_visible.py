@@ -18,6 +18,7 @@ from reeltranscode.models import (
 from reeltranscode.pipeline import PipelineProcessor
 from reeltranscode.reporter import Reporter
 from reeltranscode.state_store import StateStore
+from reeltranscode.utils import PublishResult
 
 
 def _media(path: Path, format_name: str, codec_tag: str | None) -> MediaInfo:
@@ -58,17 +59,32 @@ def _media(path: Path, format_name: str, codec_tag: str | None) -> MediaInfo:
 
 
 class _FakeAnalyzer:
-    def __init__(self, source_path: Path, temp_path: Path, source_media: MediaInfo, output_media: MediaInfo):
+    def __init__(
+        self,
+        source_path: Path,
+        temp_path: Path,
+        source_media: MediaInfo,
+        output_media: MediaInfo,
+        *,
+        published_paths: list[Path] | None = None,
+        published_output_media: MediaInfo | None = None,
+    ):
         self.source_path = source_path
         self.temp_path = temp_path
         self.source_media = source_media
         self.output_media = output_media
+        self.published_paths = set(published_paths or [])
+        self.published_output_media = published_output_media or output_media
+        self.analyze_calls: list[Path] = []
 
     def analyze(self, path: Path):
+        self.analyze_calls.append(path)
         if path == self.source_path:
             return self.source_media, ["ffprobe", str(path)]
         if path == self.temp_path:
             return self.output_media, ["ffprobe", str(path)]
+        if path in self.published_paths:
+            return self.published_output_media, ["ffprobe", str(path)]
         raise AssertionError(f"Unexpected analyze path: {path}")
 
     def stream_fingerprint(self, _media: MediaInfo) -> str:
@@ -327,6 +343,94 @@ def test_pipeline_can_publish_to_output_root_and_delete_source_after_success(tmp
 
     assert report.status == "success"
     assert target.exists()
+    assert not source.exists()
+
+
+def test_pipeline_revalidates_published_target_after_cross_volume_staging(tmp_path: Path, monkeypatch):
+    source = tmp_path / "watch" / "Movies" / "movie.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    target = tmp_path / "optimized" / "Movies" / "movie.mp4"
+    temp = tmp_path / "tmp" / ".movie.tmp.mp4"
+
+    cfg = AppConfig.from_dict(
+        {
+            "output": {
+                "mode": "keep_original",
+                "output_root": str(tmp_path / "optimized"),
+                "overwrite": True,
+                "delete_original_after_success": True,
+            },
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+        }
+    )
+    state = StateStore(cfg.paths.state_db)
+    reporter = Reporter(cfg)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=reporter)
+
+    source_media = _media(source, "matroska,webm", codec_tag=None)
+    temp_output_media = _media(temp, "mov,mp4,m4a,3gp,3g2,mj2", codec_tag="hvc1")
+    published_output_media = _media(target, "mov,mp4,m4a,3gp,3g2,mj2", codec_tag="hvc1")
+    fake_analyzer = _FakeAnalyzer(
+        source,
+        temp,
+        source_media,
+        temp_output_media,
+        published_paths=[target],
+        published_output_media=published_output_media,
+    )
+    processor.analyzer = fake_analyzer
+    processor.engine = _FakeEngine(
+        Decision(
+            strategy=Strategy.REMUX_ONLY,
+            case_label=CaseLabel.B,
+            reasons=["remux"],
+            expected_container="mp4",
+            expected_direct_play_safe=True,
+        ),
+        CompatibilityDetails(
+            container_ok=False,
+            video_ok=True,
+            audio_ok=True,
+            subtitle_ok=True,
+            dv_present=False,
+            dv_profile=None,
+            hdr10_present=False,
+            requires_container_change=True,
+            requires_audio_fix=False,
+            requires_subtitle_fix=False,
+            requires_video_transcode=False,
+            reasons=[],
+        ),
+    )
+    processor.planner = _FakePlanner(source, target, temp)
+    processor.runner = _FakeRunner()
+
+    def fake_atomic_replace(src: Path, dst: Path) -> PublishResult:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+        src.unlink()
+        return PublishResult(used_cross_device_fallback=True, staged_path=dst)
+
+    monkeypatch.setattr("reeltranscode.pipeline.atomic_replace", fake_atomic_replace)
+
+    try:
+        report = processor.process_path(source, source.parents[1], dry_run_override=False)
+    finally:
+        state.close()
+
+    assert report.status == "success"
+    assert target.exists()
+    assert target in fake_analyzer.analyze_calls
+    assert any(
+        "Published output revalidated after cross-volume staging" in note
+        for note in report.validations
+    )
     assert not source.exists()
 
 

@@ -5,8 +5,14 @@ struct LogsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Logs")
-                .font(.largeTitle.weight(.semibold))
+            HStack {
+                Text("Logs")
+                    .font(.largeTitle.weight(.semibold))
+                Spacer()
+                Button("Refresh") {
+                    model.refreshLogs()
+                }
+            }
 
             TextEditor(text: $model.logsText)
                 .font(.system(.body, design: .monospaced))

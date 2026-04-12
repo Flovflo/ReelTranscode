@@ -31,3 +31,4 @@ tmp/
 
 # Local packaging artifacts
 ReelTranscodeCore.spec
+docker/reeltranscode.local.yaml

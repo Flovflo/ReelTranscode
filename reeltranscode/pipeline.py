@@ -321,8 +321,21 @@ class PipelineProcessor:
                     # Commit temporary output to final target only after successful validation.
                     if plan.temp_path and plan.target_path:
                         ensure_parent(plan.target_path)
-                        atomic_replace(plan.temp_path, plan.target_path)
+                        publish_result = atomic_replace(plan.temp_path, plan.target_path)
                         temp_path = None
+                        if publish_result.used_cross_device_fallback and self.config.validation.run_post_ffprobe:
+                            published_media, _ = self.analyzer.analyze(plan.target_path)
+                            published_validation = self.validator.validate(media, published_media, decision, plan=plan)
+                            if published_validation.ok:
+                                if published_validation.notes:
+                                    validations.extend(published_validation.notes)
+                                validations.append("Published output revalidated after cross-volume staging")
+                            else:
+                                validations.extend(published_validation.reasons)
+                                raise RuntimeError(
+                                    "Published output failed revalidation after cross-volume staging: "
+                                    + "; ".join(published_validation.reasons)
+                                )
                         self._post_success_source_handling(path, plan.target_path, source_root)
                     self._cleanup_after_run(
                         cleanup_paths=cleanup_paths,

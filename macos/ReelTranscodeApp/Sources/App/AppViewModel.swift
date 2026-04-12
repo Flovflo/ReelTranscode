@@ -22,9 +22,11 @@ final class AppViewModel: ObservableObject {
     @Published var logsText = ""
     @Published var onboardingRequired = true
     @Published var isBusy = false
+    @Published var isRefreshing = false
     @Published var isServiceRunning = false
     @Published var serviceStatusText = ""
     @Published var serviceDiagnosticsText = ""
+    @Published var lastRefreshAt: Date?
     @Published var lastError: String?
 
     private let backendRunner = BackendRunner()
@@ -48,8 +50,7 @@ final class AppViewModel: ObservableObject {
                 } catch {
                     // Keep app usable even if tooling binaries are temporarily unavailable.
                 }
-                await refreshStatus()
-                refreshLogs()
+                await refreshAll()
             }
         } catch {
             lastError = error.localizedDescription
@@ -62,8 +63,7 @@ final class AppViewModel: ObservableObject {
         await validateConfig()
         if lastError == nil && configValidationErrors.isEmpty {
             onboardingRequired = false
-            refreshLaunchdStatus()
-            await refreshStatus()
+            await refreshAll(reportErrors: true)
         }
     }
 
@@ -75,7 +75,27 @@ final class AppViewModel: ObservableObject {
             return
         }
         await runBackendCommand(arguments: ["--config", AppPaths.configFileURL.path, "batch"])
-        await refreshStatus()
+        await refreshAll(reportErrors: true)
+    }
+
+    func refreshAll(reportErrors: Bool = false) async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer {
+            isRefreshing = false
+            lastRefreshAt = Date()
+        }
+
+        await refreshStatus(reportErrors: reportErrors)
+        refreshLogs()
+    }
+
+    func runAutomaticRefreshLoop() async {
+        guard !onboardingRequired else { return }
+        while !Task.isCancelled && !onboardingRequired {
+            await refreshAll()
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+        }
     }
 
     func refreshStatus(reportErrors: Bool = false) async {
@@ -187,7 +207,7 @@ final class AppViewModel: ObservableObject {
                     Self.stopDetachedInAppWatchProcess(detachedFallback)
                 }
                 lastError = nil
-                await refreshStatus()
+                await refreshAll(reportErrors: true)
             } catch let launchdError {
                 do {
                     try startInAppWatchProcess(executableURL: resolvedExecutableURL)
@@ -195,7 +215,7 @@ final class AppViewModel: ObservableObject {
                     serviceStatusText = "Watch service is running inside the app because launchd was unavailable."
                     serviceDiagnosticsText = launchdError.localizedDescription
                     lastError = nil
-                    await refreshStatus()
+                    await refreshAll(reportErrors: true)
                 } catch let fallbackError {
                     throw NSError(
                         domain: "ReelTranscodeApp",
@@ -244,7 +264,7 @@ final class AppViewModel: ObservableObject {
             errors.append(error.localizedDescription)
         }
 
-        await refreshStatus()
+        await refreshAll(reportErrors: true)
         if !errors.isEmpty {
             lastError = errors.joined(separator: "\n")
         }
@@ -316,12 +336,12 @@ final class AppViewModel: ObservableObject {
 
     func pauseWatch() async {
         await runBackendCommand(arguments: ["--config", AppPaths.configFileURL.path, "watch-pause"])
-        await refreshStatus()
+        await refreshAll(reportErrors: true)
     }
 
     func resumeWatch() async {
         await runBackendCommand(arguments: ["--config", AppPaths.configFileURL.path, "watch-resume"])
-        await refreshStatus()
+        await refreshAll(reportErrors: true)
     }
 
     func pickFolder() -> String? {

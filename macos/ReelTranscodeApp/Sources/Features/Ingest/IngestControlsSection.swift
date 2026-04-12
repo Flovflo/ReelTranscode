@@ -33,7 +33,7 @@ struct IngestControlsSection: View {
     private func controlButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
             .buttonStyle(.borderedProminent)
-            .disabled(model.isBusy)
+            .disabled(model.isBusy || model.isRefreshing)
     }
 
     private func statusBadge(title: String, tint: Color) -> some View {
@@ -68,6 +68,6 @@ struct IngestControlsSection: View {
     }
 
     private func refresh() {
-        Task { await model.refreshStatus() }
+        Task { await model.refreshAll(reportErrors: true) }
     }
 }

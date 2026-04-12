@@ -2,7 +2,6 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var model: AppViewModel
-    private let refreshTimer = Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
         Group {
@@ -18,16 +17,43 @@ struct RootView: View {
                 } detail: {
                     detailView
                 }
+                .navigationSplitViewStyle(.balanced)
                 .frame(minWidth: 1000, minHeight: 680)
+                .toolbar {
+                    ToolbarItemGroup {
+                        Button {
+                            Task { await model.refreshAll(reportErrors: true) }
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(model.isRefreshing)
+
+                        Button {
+                            Task { await model.runBatch() }
+                        } label: {
+                            Label("Run Library Now", systemImage: "play.fill")
+                        }
+                        .disabled(model.isBusy)
+
+                        Button {
+                            if model.isServiceRunning {
+                                model.stopWatchService()
+                            } else {
+                                model.startWatchService()
+                            }
+                        } label: {
+                            Label(
+                                model.isServiceRunning ? "Stop Watch" : "Start Watch",
+                                systemImage: model.isServiceRunning ? "stop.circle.fill" : "play.circle.fill"
+                            )
+                        }
+                        .disabled(model.isBusy)
+                    }
+                }
             }
         }
-        .onReceive(refreshTimer) { _ in
-            guard !model.onboardingRequired else { return }
-            Task {
-                await model.refreshStatus()
-                model.refreshLaunchdStatus()
-                model.refreshLogs()
-            }
+        .task(id: model.onboardingRequired) {
+            await model.runAutomaticRefreshLoop()
         }
         .alert("Error", isPresented: Binding(
             get: { model.lastError != nil },
