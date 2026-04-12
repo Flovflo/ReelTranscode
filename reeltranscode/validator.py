@@ -138,11 +138,13 @@ class OutputValidator:
         for index, (source_track, output_track) in enumerate(zip(source_tracks, output_tracks, strict=True)):
             source_hi = source_track.hearing_impaired or source_track.captions or _title_implies_hi(source_track.title)
             output_hi = output_track.hearing_impaired or output_track.captions or _title_implies_hi(output_track.title)
+            source_language = _normalize_subtitle_language(source_track.language)
+            output_language = _normalize_subtitle_language(output_track.language)
 
-            if source_track.language != output_track.language:
+            if source_language != output_language:
                 reasons.append(
                     f"Subtitle track {index} language changed: "
-                    f"source={source_track.language or 'und'}, output={output_track.language or 'und'}"
+                    f"source={source_language}, output={output_language}"
                 )
 
             source_title = _normalize_subtitle_title(source_track.title, source_hi)
@@ -339,6 +341,11 @@ def _title_implies_hi(value: str | None) -> bool:
         return False
     text = value.casefold()
     return any(token in text for token in ["sdh", "hearing impaired", "closed captions", "cc"])
+
+
+def _normalize_subtitle_language(value: str | None) -> str:
+    normalized = (value or "").strip().lower()
+    return normalized or "und"
 
 
 def _frame_rate_to_float(value: str | None) -> float | None:

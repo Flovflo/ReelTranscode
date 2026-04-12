@@ -160,3 +160,35 @@ def test_validator_prefers_clean_mediainfo_title_over_ffprobe_mojibake(tmp_path:
     result = validator.validate(source, output, decision, plan=plan)
 
     assert result.ok is True
+
+
+def test_validator_treats_missing_and_und_subtitle_language_as_equivalent(tmp_path: Path):
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _source_media(tmp_path / "movie.mkv")
+    source.streams[2].language = None
+
+    output = _media(tmp_path / "movie.mp4", first_output_default=False)
+    output.streams[2].language = "und"
+
+    decision = Decision(
+        strategy=Strategy.SUBTITLE_ONLY,
+        case_label=CaseLabel.D,
+        reasons=["Subtitle codec subrip incompatible with MP4"],
+        expected_container="mp4",
+        expected_direct_play_safe=True,
+    )
+    plan = ExecutionPlan(
+        source_path=source.path,
+        target_path=output.path,
+        temp_path=output.path,
+        workspace_dir=None,
+        strategy=decision.strategy,
+        case_label=decision.case_label,
+        steps=[],
+    )
+
+    result = validator.validate(source, output, decision, plan=plan)
+
+    assert result.ok is True
+    assert not any("language changed" in reason for reason in result.reasons)
