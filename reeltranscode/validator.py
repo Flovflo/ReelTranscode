@@ -81,10 +81,11 @@ class OutputValidator:
             reasons.extend(subtitle_reasons)
             notes.extend(subtitle_notes)
 
-        expected_output_duration = _expected_output_duration(source)
+        tolerance = self.config.validation.verify_duration_tolerance_seconds
+        expected_output_duration = _expected_output_duration(source, tolerance)
         if output.duration is not None and expected_output_duration is not None:
             delta = abs(output.duration - expected_output_duration)
-            if delta > self.config.validation.verify_duration_tolerance_seconds:
+            if delta > tolerance:
                 reasons.append(f"Duration delta too high: {delta:.2f}s")
 
         reasons.extend(self._validate_video_timing(source, output))
@@ -212,8 +213,18 @@ class OutputValidator:
                 )
 
         if output.duration is not None and output_video_duration is not None:
-            delta = abs(output.duration - output_video_duration)
-            if delta > tolerance:
+            output_container_video_delta = abs(output.duration - output_video_duration)
+            source_container_video_delta = None
+            if source.duration is not None and source_video_duration is not None:
+                source_container_video_delta = abs(source.duration - source_video_duration)
+
+            if (
+                source_container_video_delta is not None
+                and source_container_video_delta > tolerance
+                and abs(output_container_video_delta - source_container_video_delta) <= tolerance
+            ):
+                pass
+            elif output_container_video_delta > tolerance:
                 reasons.append(
                     "Output video duration does not match container duration: "
                     f"video={output_video_duration:.2f}s, container={output.duration:.2f}s"
@@ -231,7 +242,15 @@ class OutputValidator:
                     )
                 continue
 
-            if audio_stream.duration is None or output_video_duration is None:
+            if audio_stream.duration is None:
+                continue
+
+            source_audio_durations = [track.duration for track in source.audio_streams if track.duration is not None]
+            if source_audio_durations:
+                if min(abs(audio_stream.duration - duration) for duration in source_audio_durations) <= tolerance:
+                    continue
+
+            if output_video_duration is None:
                 continue
 
             delta = abs(audio_stream.duration - output_video_duration)
@@ -340,8 +359,16 @@ def _frame_rate_to_float(value: str | None) -> float | None:
         return None
 
 
-def _expected_output_duration(source: MediaInfo) -> float | None:
+def _expected_output_duration(source: MediaInfo, tolerance: float) -> float | None:
     source_video = source.primary_video
+    if source.duration is not None:
+        if source_video is None or source_video.duration is None:
+            return source.duration
+        if abs(source.duration - source_video.duration) > tolerance:
+            source_audio_durations = [track.duration for track in source.audio_streams if track.duration is not None]
+            if source_audio_durations and min(abs(duration - source.duration) for duration in source_audio_durations) <= tolerance:
+                return source.duration
+            return source_video.duration
     if source_video and source_video.duration is not None:
         return source_video.duration
     return source.duration

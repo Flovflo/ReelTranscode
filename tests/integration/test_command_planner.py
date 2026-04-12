@@ -882,6 +882,8 @@ def test_dovi_muxer_plan_can_ocr_image_subtitles_into_mov_text(tmp_path: Path):
     assert str(plan.ocr_subtitle_tasks[0].output_path) in plan.steps[1].command
     assert plan.steps[2].command[0] == str(bin_dir / "MP4Box")
     assert f"self#video:dvp=f8.1" in plan.steps[2].command
+    assert "-out" in plan.steps[2].command
+    assert plan.temp_path is not None and plan.temp_path.name.endswith(".dv-patched.mp4")
     assert any("OCR image subtitle" in note for note in plan.notes)
     assert any("Reapplied Dolby Vision signaling" in note for note in plan.notes)
 

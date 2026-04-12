@@ -358,6 +358,61 @@ def test_validator_accepts_output_audio_duration_when_source_track_is_already_sh
     assert not any("Output audio duration changed unexpectedly" in reason for reason in result.reasons)
 
 
+def test_validator_accepts_preserved_source_container_video_duration_mismatch():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(Path("/tmp/source.mkv"), "matroska,webm", has_dv=False, codec_tag=None)
+    source.streams[0].duration = 7108.14
+    source.streams[1].duration = 7113.45
+    source.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "audio",
+                "codec_name": "aac",
+                "channels": 2,
+                "channel_layout": "stereo",
+                "duration": "7113.45",
+                "disposition": {"default": 0},
+                "tags": {"language": "fra"},
+            }
+        )
+    )
+    source.duration = 7113.45
+
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="hvc1",
+    )
+    output.streams[0].duration = 7108.14
+    output.streams[1].duration = 7113.45
+    output.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "audio",
+                "codec_name": "aac",
+                "codec_tag_string": "mp4a",
+                "channels": 2,
+                "channel_layout": "stereo",
+                "duration": "7113.45",
+                "disposition": {"default": 0},
+                "tags": {"language": "fra"},
+            }
+        )
+    )
+    output.duration = 7113.45
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Duration delta too high" in reason for reason in result.reasons)
+    assert not any("Output video duration does not match container duration" in reason for reason in result.reasons)
+    assert not any("Output audio/video duration mismatch" in reason for reason in result.reasons)
+
+
 def test_validator_accepts_dropped_image_subtitles_when_plan_declares_them():
     cfg = AppConfig.from_dict({})
     validator = OutputValidator(cfg)

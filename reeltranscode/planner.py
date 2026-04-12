@@ -302,6 +302,7 @@ class CommandPlanner:
             return [], [], None, []
 
         repaired_path = plan.temp_path.with_name(f"{plan.temp_path.stem}.subtitle-repaired{plan.temp_path.suffix}")
+        final_repaired_path = repaired_path
         subtitle_merge_cmd = [
             self.config.tooling.ffmpeg_bin,
             "-hide_banner",
@@ -346,7 +347,11 @@ class CommandPlanner:
             )
         ]
         notes = list(subtitle_notes)
+        cleanup_paths = [plan.temp_path]
         if dv_profile_arg := self._dovi_mp4box_profile_arg(media):
+            final_repaired_path = repaired_path.with_name(
+                f"{repaired_path.stem}.dv-patched{repaired_path.suffix}"
+            )
             steps.append(
                 CommandStep(
                     name="dovi_subtitle_repair_metadata_patch",
@@ -357,14 +362,17 @@ class CommandPlanner:
                         "-add",
                         f"self#video:dvp={dv_profile_arg}",
                         str(repaired_path),
+                        "-out",
+                        str(final_repaired_path),
                     ],
-                    expected_outputs=[repaired_path],
+                    expected_outputs=[final_repaired_path],
                     cwd=plan.workspace_dir,
                 )
             )
             notes.append(f"Reapplied Dolby Vision signaling after subtitle repair via MP4Box ({dv_profile_arg})")
+            cleanup_paths.append(repaired_path)
 
-        return steps, [plan.temp_path], repaired_path, notes
+        return steps, cleanup_paths, final_repaired_path, notes
 
     def _build_dovi_muxer_plan(
         self,
@@ -495,6 +503,7 @@ class CommandPlanner:
                 )
             )
             if dv_profile_arg := self._dovi_mp4box_profile_arg(media):
+                patched_temp_path = temp_path.with_name(f"{temp_path.stem}.dv-patched{temp_path.suffix}")
                 steps.append(
                     CommandStep(
                         name="dovi_metadata_patch",
@@ -505,12 +514,16 @@ class CommandPlanner:
                             "-add",
                             f"self#video:dvp={dv_profile_arg}",
                             str(temp_path),
+                            "-out",
+                            str(patched_temp_path),
                         ],
-                        expected_outputs=[temp_path],
+                        expected_outputs=[patched_temp_path],
                         cwd=step_cwd,
                     )
                 )
                 notes.append(f"Reapplied Dolby Vision signaling after subtitle merge via MP4Box ({dv_profile_arg})")
+                cleanup_paths.append(temp_path)
+                temp_path = patched_temp_path
         else:
             temp_path = base_temp_path
 
