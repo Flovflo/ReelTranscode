@@ -144,6 +144,12 @@ def _run_watch(config: AppConfig, pipeline: PipelineProcessor, dry_run: bool) ->
     watcher = LibraryWatcher(config, pipeline.state_store)
     shutdown_requested = False
     PROCESS_REGISTRY.clear_stop_request()
+    interrupted_jobs = pipeline.state_store.mark_incomplete_running_jobs_failed()
+    if interrupted_jobs:
+        LOGGER.warning(
+            "Marked %d incomplete running job(s) as failed before starting a new watcher instance",
+            interrupted_jobs,
+        )
 
     def _process(path: Path, root: Path) -> None:
         report = pipeline.process_path(path, root, dry_run_override=dry_run)

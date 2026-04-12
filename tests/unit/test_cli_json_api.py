@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from reeltranscode.cli import _run_config_export, _run_config_validate, _run_status
@@ -170,5 +171,71 @@ def test_runtime_pause_state_is_persisted(tmp_path: Path):
         assert state.is_watch_paused() is True
         state.set_watch_paused(False)
         assert state.is_watch_paused() is False
+    finally:
+        state.close()
+
+
+def test_runtime_pause_state_tolerates_legacy_null_metrics(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE runtime_state (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                watch_running INTEGER,
+                watch_paused INTEGER,
+                queued_paths INTEGER,
+                active_workers INTEGER,
+                max_workers INTEGER,
+                updated_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO runtime_state(singleton, watch_running, watch_paused, queued_paths, active_workers, max_workers, updated_at)
+            VALUES (1, 1, 0, NULL, NULL, NULL, NULL)
+            """
+        )
+
+    state = StateStore(db_path)
+    try:
+        runtime = state.get_runtime_state()
+        assert runtime.watch_running is True
+        assert runtime.watch_paused is False
+        assert runtime.queued_paths == 0
+        assert runtime.active_workers == 0
+        assert runtime.max_workers == 0
+        assert runtime.updated_at
+        assert state.is_watch_paused() is False
+    finally:
+        state.close()
+
+
+def test_mark_incomplete_running_jobs_failed_reconciles_stale_entries(tmp_path: Path):
+    cfg = AppConfig.from_dict({"paths": {"state_db": str(tmp_path / "state.db")}})
+    state = StateStore(cfg.paths.state_db)
+    try:
+        state.mark_job_started(
+            job_id="stale-job",
+            source_path=tmp_path / "movie.mkv",
+            target_path=tmp_path / "movie.mp4",
+            strategy="subtitle_only",
+            case_label="D_SUBTITLE_ONLY",
+            stream_fp="stream-fp",
+            metadata_fp="meta-fp",
+        )
+
+        reconciled = state.mark_incomplete_running_jobs_failed()
+        snapshot = state.status_snapshot(limit=10)
+
+        assert reconciled == 1
+        assert snapshot["summary"]["running"] == 0
+        assert snapshot["summary"]["failed"] == 1
+        assert snapshot["latest_jobs"][0]["job_id"] == "stale-job"
+        assert snapshot["latest_jobs"][0]["status"] == JobStatus.FAILED.value
+        assert snapshot["latest_jobs"][0]["error_class"] == "InterruptedError"
+        assert snapshot["latest_jobs"][0]["error_message"] == "Job was interrupted before completion by a watcher restart"
+        assert snapshot["latest_jobs"][0]["finished_at"] is not None
     finally:
         state.close()

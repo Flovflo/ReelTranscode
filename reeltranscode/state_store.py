@@ -205,6 +205,41 @@ class StateStore:
                 ),
             )
 
+    def mark_incomplete_running_jobs_failed(
+        self,
+        *,
+        error_class: str = "InterruptedError",
+        error_message: str = "Job was interrupted before completion by a watcher restart",
+    ) -> int:
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                """
+                SELECT job_id
+                FROM jobs
+                WHERE status=? AND finished_at IS NULL
+                """,
+                (JobStatus.RUNNING.value,),
+            ).fetchall()
+            if not rows:
+                return 0
+
+            finished_at = now_utc_iso()
+            self._conn.execute(
+                """
+                UPDATE jobs
+                SET status=?, error_class=?, error_message=?, finished_at=?
+                WHERE status=? AND finished_at IS NULL
+                """,
+                (
+                    JobStatus.FAILED.value,
+                    error_class,
+                    error_message,
+                    finished_at,
+                    JobStatus.RUNNING.value,
+                ),
+            )
+            return len(rows)
+
     def get_runtime_state(self) -> RuntimeState:
         row = self._conn.execute(
             """
@@ -215,13 +250,19 @@ class StateStore:
         ).fetchone()
         if row is None:
             return RuntimeState(False, False, 0, 0, 0, now_utc_iso())
+
+        def _coerce_runtime_int(value: Any) -> int:
+            if value is None:
+                return 0
+            return max(0, int(value))
+
         return RuntimeState(
-            watch_running=bool(row["watch_running"]),
-            watch_paused=bool(row["watch_paused"]),
-            queued_paths=int(row["queued_paths"]),
-            active_workers=int(row["active_workers"]),
-            max_workers=int(row["max_workers"]),
-            updated_at=str(row["updated_at"]),
+            watch_running=bool(row["watch_running"] or 0),
+            watch_paused=bool(row["watch_paused"] or 0),
+            queued_paths=_coerce_runtime_int(row["queued_paths"]),
+            active_workers=_coerce_runtime_int(row["active_workers"]),
+            max_workers=_coerce_runtime_int(row["max_workers"]),
+            updated_at=str(row["updated_at"] or now_utc_iso()),
         )
 
     def set_watch_paused(self, paused: bool) -> None:

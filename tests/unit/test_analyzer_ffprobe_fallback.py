@@ -148,3 +148,57 @@ def test_analyzer_tolerates_non_utf8_mediainfo_output():
         media, _ = analyzer.analyze(Path("/tmp/input.mp4"))
 
     assert media.raw_mediainfo["media"]["track"][0]["Title"].startswith("Au revoir")
+
+
+def test_analyzer_retries_transient_ffprobe_failure():
+    cfg = AppConfig.from_dict({"tooling": {"ffprobe_bin": "/opt/homebrew/bin/ffprobe"}})
+    analyzer = FFprobeAnalyzer(cfg)
+    payload = json.dumps(
+        {
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "120.0"},
+            "streams": [{"index": 0, "codec_type": "video", "codec_name": "hevc", "pix_fmt": "yuv420p10le"}],
+        }
+    )
+    attempts = {"count": 0}
+
+    def fake_run(command, *, text, cwd=None):  # noqa: ANN001
+        if command[0] == "/opt/homebrew/bin/ffprobe":
+            attempts["count"] += 1
+        if command[0] == "/opt/homebrew/bin/ffprobe" and attempts["count"] == 1:
+            return _Result(1, stderr="Invalid data found when processing input")
+        return _Result(0, stdout=payload)
+
+    with patch("reeltranscode.analyzer.time.sleep"):
+        with patch("reeltranscode.analyzer.PROCESS_REGISTRY.run", side_effect=fake_run):
+            media, used_command = analyzer.analyze(Path("/tmp/input.mp4"))
+
+    assert attempts["count"] == 2
+    assert used_command[0] == "/opt/homebrew/bin/ffprobe"
+    assert media.format_name == "mov,mp4,m4a,3gp,3g2,mj2"
+
+
+def test_analyzer_retries_transient_ffprobe_oserror():
+    cfg = AppConfig.from_dict({"tooling": {"ffprobe_bin": "/opt/homebrew/bin/ffprobe"}})
+    analyzer = FFprobeAnalyzer(cfg)
+    payload = json.dumps(
+        {
+            "format": {"format_name": "matroska,webm", "duration": "120.0"},
+            "streams": [{"index": 0, "codec_type": "video", "codec_name": "hevc", "pix_fmt": "yuv420p10le"}],
+        }
+    )
+    attempts = {"count": 0}
+
+    def fake_run(command, *, text, cwd=None):  # noqa: ANN001
+        if command[0] == "/opt/homebrew/bin/ffprobe":
+            attempts["count"] += 1
+        if command[0] == "/opt/homebrew/bin/ffprobe" and attempts["count"] == 1:
+            raise OSError(35, "Resource temporarily unavailable")
+        return _Result(0, stdout=payload)
+
+    with patch("reeltranscode.analyzer.time.sleep"):
+        with patch("reeltranscode.analyzer.PROCESS_REGISTRY.run", side_effect=fake_run):
+            media, used_command = analyzer.analyze(Path("/tmp/input.mkv"))
+
+    assert attempts["count"] == 2
+    assert used_command[0] == "/opt/homebrew/bin/ffprobe"
+    assert media.format_name == "matroska,webm"

@@ -22,6 +22,10 @@ from reeltranscode.utils import atomic_replace, ensure_parent, now_utc_iso
 from reeltranscode.validator import OutputValidator
 
 LOGGER = logging.getLogger(__name__)
+HEVC_MP4_STABILIZATION_PROBE_SNIPPETS = (
+    "invalid data found when processing input",
+    "no start code is found",
+)
 
 
 class PipelineProcessor:
@@ -258,35 +262,54 @@ class PipelineProcessor:
                             f"Generated {len(plan.ocr_subtitle_tasks)} OCR subtitle track(s) for Apple-native MP4 output"
                         )
                     for step in plan.steps:
-                        if step.cwd is not None:
-                            step.cwd.mkdir(parents=True, exist_ok=True)
-                        result = run_with_retry(
-                            lambda cmd=step.command, cwd=step.cwd: self.runner.run(cmd, cwd=cwd),
-                            self.config.retry,
-                        )
-                        missing_outputs = [output for output in step.expected_outputs if not output.exists()]
-                        if missing_outputs:
-                            missing_text = ", ".join(str(output) for output in missing_outputs)
-                            details = " | ".join(
-                                part
-                                for part in [result.stdout.strip(), result.stderr.strip()]
-                                if part
-                            )
-                            if "No space left on device" in details:
-                                raise RuntimeError(
-                                    self._no_space_left_message(path, size, decision, plan, details)
-                                )
-                            if details:
-                                raise RuntimeError(
-                                    f"Step '{step.name}' completed without expected outputs: {missing_text}. "
-                                    f"tool output: {details}"
-                                )
-                            raise RuntimeError(f"Step '{step.name}' completed without expected outputs: {missing_text}")
+                        self._run_step(step, path=path, size=size, decision=decision, plan=plan)
 
                     if plan.target_path and self.config.validation.run_post_ffprobe:
                         validation_path = plan.temp_path if plan.temp_path and plan.temp_path.exists() else plan.target_path
-                        output_media, _ = self.analyzer.analyze(validation_path)
+                        try:
+                            output_media, _ = self.analyzer.analyze(validation_path)
+                        except ProbeError as exc:
+                            if not self._should_retry_hevc_mp4_stabilization(exc):
+                                raise
+                            fallback_steps, fallback_cleanup_paths = self.planner.build_hevc_mp4_stabilization_steps(
+                                media,
+                                decision,
+                                compatibility,
+                                plan,
+                            )
+                            if not fallback_steps:
+                                raise
+                            validations.append(
+                                "Initial HEVC MP4 remux was unreadable; rebuilding via MPEG-TS video stabilization"
+                            )
+                            cleanup_paths.extend(fallback_cleanup_paths)
+                            ffmpeg_commands.extend(step.command for step in fallback_steps)
+                            for step in fallback_steps:
+                                self._run_step(step, path=path, size=size, decision=decision, plan=plan)
+                            output_media, _ = self.analyzer.analyze(validation_path)
                         validation = self.validator.validate(media, output_media, decision, plan=plan)
+                        if (
+                            not validation.ok
+                            and self._should_retry_dovi_subtitle_repair(decision, plan, validation.reasons)
+                        ):
+                            fallback_steps, fallback_cleanup_paths, repaired_path, fallback_notes = (
+                                self.planner.build_dovi_subtitle_repair_steps(media, decision, plan)
+                            )
+                            if fallback_steps and repaired_path is not None:
+                                validations.append(
+                                    "DoViMuxer output failed subtitle validation; rebuilding MP4 subtitles from source"
+                                )
+                                validations.extend(fallback_notes)
+                                cleanup_paths.extend(fallback_cleanup_paths)
+                                ffmpeg_commands.extend(step.command for step in fallback_steps)
+                                for step in fallback_steps:
+                                    self._run_step(step, path=path, size=size, decision=decision, plan=plan)
+                                output_media, _ = self.analyzer.analyze(repaired_path)
+                                validation = self.validator.validate(media, output_media, decision, plan=plan)
+                                if validation.ok:
+                                    plan.temp_path = repaired_path
+                                    temp_path = repaired_path
+                                    validation_path = repaired_path
                         if validation.ok:
                             if validation.notes:
                                 validations.extend(validation.notes)
@@ -417,6 +440,43 @@ class PipelineProcessor:
         if plan.temp_path is not None:
             return plan.temp_path.parent.expanduser().resolve()
         return self.config.paths.temp_dir.expanduser().resolve()
+
+    @staticmethod
+    def _should_retry_hevc_mp4_stabilization(exc: ProbeError) -> bool:
+        message = str(exc).lower()
+        return all(snippet in message for snippet in HEVC_MP4_STABILIZATION_PROBE_SNIPPETS)
+
+    @staticmethod
+    def _should_retry_dovi_subtitle_repair(decision, plan, validation_reasons: list[str]) -> bool:
+        if not decision.use_dovi_muxer or plan.temp_path is None or plan.workspace_dir is None or plan.ocr_subtitle_tasks:
+            return False
+        return any(reason.startswith("Subtitle track ") for reason in validation_reasons)
+
+    def _run_step(self, step, *, path: Path, size: int | None, decision, plan) -> None:
+        if step.cwd is not None:
+            step.cwd.mkdir(parents=True, exist_ok=True)
+        result = run_with_retry(
+            lambda cmd=step.command, cwd=step.cwd: self.runner.run(cmd, cwd=cwd),
+            self.config.retry,
+        )
+        missing_outputs = [output for output in step.expected_outputs if not output.exists()]
+        if missing_outputs:
+            missing_text = ", ".join(str(output) for output in missing_outputs)
+            details = " | ".join(
+                part
+                for part in [result.stdout.strip(), result.stderr.strip()]
+                if part
+            )
+            if "No space left on device" in details:
+                raise RuntimeError(
+                    self._no_space_left_message(path, size, decision, plan, details)
+                )
+            if details:
+                raise RuntimeError(
+                    f"Step '{step.name}' completed without expected outputs: {missing_text}. "
+                    f"tool output: {details}"
+                )
+            raise RuntimeError(f"Step '{step.name}' completed without expected outputs: {missing_text}")
 
     def _finalize_report(
         self,

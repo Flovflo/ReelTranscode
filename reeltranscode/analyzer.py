@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,11 @@ APPLE_CONTAINERS = {"mp4", "mov", "m4v"}
 APPLE_VIDEO_CODECS = {"hevc", "h264"}
 APPLE_AUDIO_CODECS = {"eac3", "ac3", "aac"}
 MP4_SUBTITLE_CODECS = {"mov_text"}
+TRANSIENT_PROBE_ERROR_SNIPPETS = (
+    "resource temporarily unavailable",
+    "invalid data found when processing input",
+    "no start code is found",
+)
 
 
 class ProbeError(RuntimeError):
@@ -102,18 +108,50 @@ class FFprobeAnalyzer:
         details = "; ".join(errors)
         return f"ffprobe failed for {path}. attempts: {details}"
 
+    @staticmethod
+    def _is_transient_probe_failure(message: str) -> bool:
+        normalized = message.lower()
+        return any(snippet in normalized for snippet in TRANSIENT_PROBE_ERROR_SNIPPETS)
+
     def analyze(self, path: Path) -> tuple[MediaInfo, list[str]]:
         errors: list[str] = []
         for ffprobe_bin in self._ffprobe_candidates():
             command = self._probe_command_for_binary(ffprobe_bin, path)
             LOGGER.debug("ffprobe command: %s", " ".join(command))
-            try:
-                process = PROCESS_REGISTRY.run(
-                    command,
-                    text=True,
+            delay = self.config.retry.backoff_initial_seconds
+            max_attempts = max(1, self.config.retry.max_attempts)
+            process = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    process = PROCESS_REGISTRY.run(
+                        command,
+                        text=True,
+                    )
+                except OSError as exc:
+                    details = str(exc)
+                    should_retry = (
+                        attempt < max_attempts and self._is_transient_probe_failure(details)
+                    )
+                    if not should_retry:
+                        errors.append(f"{ffprobe_bin}: {details}")
+                        process = None
+                        break
+                    time.sleep(delay)
+                    delay = min(delay * 2, self.config.retry.backoff_max_seconds)
+                    continue
+                if process.returncode == 0:
+                    break
+                stderr = process.stderr.strip() or process.stdout.strip() or f"exit code {process.returncode}"
+                should_retry = (
+                    attempt < max_attempts and self._is_transient_probe_failure(stderr)
                 )
-            except OSError as exc:
-                errors.append(f"{ffprobe_bin}: {exc}")
+                if not should_retry:
+                    errors.append(f"{ffprobe_bin}: {stderr}")
+                    process = None
+                    break
+                time.sleep(delay)
+                delay = min(delay * 2, self.config.retry.backoff_max_seconds)
+            if process is None:
                 continue
             if process.returncode != 0:
                 stderr = process.stderr.strip() or process.stdout.strip() or f"exit code {process.returncode}"
@@ -299,8 +337,12 @@ class FFprobeAnalyzer:
         mediainfo_tracks = FFprobeAnalyzer._mediainfo_text_tracks(media.raw_mediainfo)
 
         for index, stream in enumerate(media.subtitle_streams):
-            track = mediainfo_tracks[index] if index < len(mediainfo_tracks) else {}
-            title = stream.title or _clean_mediainfo_text(track.get("Title"))
+            track = FFprobeAnalyzer._match_mediainfo_text_track(
+                stream=stream,
+                mediainfo_tracks=mediainfo_tracks,
+                fallback_index=index,
+            )
+            title = _preferred_subtitle_title(stream.title, track.get("Title"))
             language = _normalize_language(stream.language or track.get("Language"))
             codec_name = (stream.codec_name or "").lower() or _mediainfo_subtitle_codec(track)
             forced = stream.disposition.forced or _mediainfo_yes(track.get("Forced"))
@@ -410,6 +452,24 @@ class FFprobeAnalyzer:
         tracks = media_node.get("track", []) or []
         return [track for track in tracks if str(track.get("@type")) == "Text"]
 
+    @staticmethod
+    def _match_mediainfo_text_track(
+        *,
+        stream: StreamInfo,
+        mediainfo_tracks: list[dict[str, Any]],
+        fallback_index: int,
+    ) -> dict[str, Any]:
+        for track in mediainfo_tracks:
+            if _mediainfo_stream_order(track) == stream.index:
+                return track
+        for track in mediainfo_tracks:
+            mediainfo_id = _mediainfo_stream_id(track)
+            if mediainfo_id is not None and mediainfo_id - 1 == stream.index:
+                return track
+        if fallback_index < len(mediainfo_tracks):
+            return mediainfo_tracks[fallback_index]
+        return {}
+
 
 def _frame_rate_to_float(value: str | None) -> float | None:
     if not value or value in {"0/0", "N/A"}:
@@ -505,8 +565,36 @@ def _mediainfo_subtitle_codec(track: dict[str, Any]) -> str:
     return codec_id or format_name
 
 
+def _mediainfo_stream_order(track: dict[str, Any]) -> int | None:
+    value = track.get("StreamOrder")
+    if value in {None, ""}:
+        return None
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _mediainfo_stream_id(track: dict[str, Any]) -> int | None:
+    value = track.get("ID")
+    if value in {None, ""}:
+        return None
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
 def _clean_mediainfo_text(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _preferred_subtitle_title(ffprobe_title: Any, mediainfo_title: Any) -> str | None:
+    cleaned_ffprobe = _clean_mediainfo_text(ffprobe_title)
+    cleaned_mediainfo = _clean_mediainfo_text(mediainfo_title)
+    if cleaned_mediainfo and cleaned_ffprobe and "\ufffd" in cleaned_ffprobe:
+        return cleaned_mediainfo
+    return cleaned_ffprobe or cleaned_mediainfo

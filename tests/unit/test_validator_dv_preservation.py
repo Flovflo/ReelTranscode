@@ -333,6 +333,31 @@ def test_validator_rejects_audio_video_start_time_drift():
     assert any("start offset changed unexpectedly" in reason for reason in result.reasons)
 
 
+def test_validator_accepts_output_audio_duration_when_source_track_is_already_shorter():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(Path("/tmp/source.mkv"), "matroska,webm", has_dv=False, codec_tag=None)
+    source.streams[0].duration = 6254.916
+    source.streams[1].duration = 6242.912
+    source.duration = 6254.916
+
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="hvc1",
+    )
+    output.streams[0].duration = 6254.916
+    output.streams[1].duration = 6242.912
+    output.duration = 6254.916
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Output audio/video duration mismatch" in reason for reason in result.reasons)
+    assert not any("Output audio duration changed unexpectedly" in reason for reason in result.reasons)
+
+
 def test_validator_accepts_dropped_image_subtitles_when_plan_declares_them():
     cfg = AppConfig.from_dict({})
     validator = OutputValidator(cfg)

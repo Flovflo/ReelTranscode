@@ -173,6 +173,199 @@ class CommandPlanner:
             notes=notes,
         )
 
+    def build_hevc_mp4_stabilization_steps(
+        self,
+        media: MediaInfo,
+        decision: Decision,
+        compatibility: CompatibilityDetails,
+        plan: ExecutionPlan,
+    ) -> tuple[list[CommandStep], list[Path]]:
+        source = media.primary_video
+        if (
+            plan.temp_path is None
+            or plan.workspace_dir is not None
+            or plan.ocr_subtitle_tasks
+            or decision.use_dovi_muxer
+            or self._target_suffix() != ".mp4"
+            or source is None
+            or (source.codec_name or "").lower() != "hevc"
+        ):
+            return [], []
+
+        ffmpeg = self.config.tooling.ffmpeg_bin
+        step_cwd = plan.temp_path.parent
+        movflags = "+write_colr"
+        if self.config.remux.faststart:
+            movflags = f"{movflags}+faststart"
+
+        stabilized_ts_path = plan.temp_path.with_name(f"{plan.temp_path.stem}.video-stabilized.ts")
+        stabilized_video_path = plan.temp_path.with_name(f"{plan.temp_path.stem}.video-stabilized.mp4")
+
+        stabilize_video_ts_cmd = [
+            ffmpeg,
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(media.path),
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "copy",
+            "-f",
+            "mpegts",
+            str(stabilized_ts_path),
+        ]
+
+        stabilize_video_mp4_cmd = [
+            ffmpeg,
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(stabilized_ts_path),
+            "-map",
+            "0:v:0",
+        ]
+        stabilize_video_mp4_cmd.extend(self._video_args(media, decision, compatibility))
+        stabilize_video_mp4_cmd.extend(["-movflags", movflags, str(stabilized_video_path)])
+
+        subtitle_args, _, _, _, _ = self._subtitle_args(
+            media,
+            decision,
+            plan.target_path or plan.temp_path,
+            workspace_dir=None,
+            input_index=1,
+            include_maps=True,
+            ocr_input_start_index=2,
+        )
+        rebuild_cmd = [
+            ffmpeg,
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(stabilized_video_path),
+            "-i",
+            str(media.path),
+            "-map",
+            "0:v:0",
+        ]
+        if self.config.remux.keep_chapters:
+            rebuild_cmd.extend(["-map_chapters", "1"])
+        else:
+            rebuild_cmd.extend(["-map_chapters", "-1"])
+        rebuild_cmd.extend(self._video_args(media, decision, compatibility))
+        rebuild_cmd.extend(subtitle_args)
+        rebuild_cmd.extend(self._audio_args(media, decision, input_index=1, include_default_maps=True))
+        rebuild_cmd.extend(["-map_metadata", "1", "-movflags", movflags, str(plan.temp_path)])
+
+        steps = [
+            CommandStep(
+                name="stabilize_hevc_video_ts",
+                command=stabilize_video_ts_cmd,
+                expected_outputs=[stabilized_ts_path],
+                cwd=step_cwd,
+            ),
+            CommandStep(
+                name="stabilize_hevc_video_mp4",
+                command=stabilize_video_mp4_cmd,
+                expected_outputs=[stabilized_video_path],
+                cwd=step_cwd,
+            ),
+            CommandStep(
+                name="rebuild_mp4_with_stabilized_video",
+                command=rebuild_cmd,
+                expected_outputs=[plan.temp_path],
+                cwd=step_cwd,
+            ),
+        ]
+        return steps, [stabilized_ts_path, stabilized_video_path]
+
+    def build_dovi_subtitle_repair_steps(
+        self,
+        media: MediaInfo,
+        decision: Decision,
+        plan: ExecutionPlan,
+    ) -> tuple[list[CommandStep], list[Path], Path | None, list[str]]:
+        if (
+            plan.temp_path is None
+            or plan.workspace_dir is None
+            or plan.ocr_subtitle_tasks
+            or not decision.use_dovi_muxer
+            or not media.subtitle_streams
+        ):
+            return [], [], None, []
+
+        caps = self.tooling.resolve_dolby_vision_mux_capabilities()
+        if not caps.available or not caps.mp4box_bin:
+            return [], [], None, []
+
+        repaired_path = plan.temp_path.with_name(f"{plan.temp_path.stem}.subtitle-repaired{plan.temp_path.suffix}")
+        subtitle_merge_cmd = [
+            self.config.tooling.ffmpeg_bin,
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(plan.temp_path),
+            "-i",
+            str(media.path),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+        ]
+        subtitle_args, _, subtitle_notes, _, _ = self._subtitle_args(
+            media,
+            decision,
+            plan.target_path or plan.temp_path,
+            workspace_dir=None,
+            input_index=1,
+            include_maps=True,
+            ocr_input_start_index=2,
+        )
+        subtitle_merge_cmd.extend(["-c:v", "copy", "-tag:v", self.config.video.hevc_tag, "-c:a", "copy"])
+        subtitle_merge_cmd.extend(subtitle_args)
+        subtitle_merge_cmd.extend(["-map_metadata", "1"])
+        if self.config.remux.keep_chapters:
+            subtitle_merge_cmd.extend(["-map_chapters", "1"])
+        else:
+            subtitle_merge_cmd.extend(["-map_chapters", "-1"])
+        movflags = "+write_colr"
+        if self.config.remux.faststart:
+            movflags = f"{movflags}+faststart"
+        subtitle_merge_cmd.extend(["-movflags", movflags, str(repaired_path)])
+
+        steps = [
+            CommandStep(
+                name="dovi_subtitle_repair",
+                command=subtitle_merge_cmd,
+                expected_outputs=[repaired_path],
+                cwd=plan.workspace_dir,
+            )
+        ]
+        notes = list(subtitle_notes)
+        if dv_profile_arg := self._dovi_mp4box_profile_arg(media):
+            steps.append(
+                CommandStep(
+                    name="dovi_subtitle_repair_metadata_patch",
+                    command=[
+                        caps.mp4box_bin,
+                        "-tmp",
+                        str(plan.workspace_dir),
+                        "-add",
+                        f"self#video:dvp={dv_profile_arg}",
+                        str(repaired_path),
+                    ],
+                    expected_outputs=[repaired_path],
+                    cwd=plan.workspace_dir,
+                )
+            )
+            notes.append(f"Reapplied Dolby Vision signaling after subtitle repair via MP4Box ({dv_profile_arg})")
+
+        return steps, [plan.temp_path], repaired_path, notes
+
     def _build_dovi_muxer_plan(
         self,
         media: MediaInfo,

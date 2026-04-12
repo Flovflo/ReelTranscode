@@ -115,6 +115,10 @@ class OutputValidator:
             return [], []
 
         reasons: list[str] = []
+        notes: list[str] = []
+        source_has_default_subtitle = any(track.default for track in source_tracks)
+        output_default_indices = [index for index, track in enumerate(output_tracks) if track.default]
+        allow_inferred_first_default = not source_has_default_subtitle and output_default_indices == [0]
 
         if len(output_tracks) != len(source_tracks):
             reasons.append(
@@ -149,6 +153,8 @@ class OutputValidator:
                 )
 
             if source_track.default != output_track.default:
+                if allow_inferred_first_default and index == 0 and output_track.default and not source_track.default:
+                    continue
                 reasons.append(
                     f"Subtitle track {index} default flag changed: "
                     f"source={source_track.default}, output={output_track.default}"
@@ -169,6 +175,8 @@ class OutputValidator:
             return reasons, []
 
         notes = [f"Subtitle validation passed: {len(output_tracks)} mov_text tracks preserved"]
+        if allow_inferred_first_default:
+            notes.append("MP4 mux inferred a default subtitle track because the source had none")
         if dropped:
             notes.append(f"Dropped {len(dropped)} incompatible image subtitle track(s) for Apple-native MP4 output")
         return [], notes
@@ -212,8 +220,20 @@ class OutputValidator:
                 )
 
         for audio_index, audio_stream in enumerate(output.audio_streams):
+            source_audio = source.audio_streams[audio_index] if audio_index < len(source.audio_streams) else None
+
+            if source_audio is not None and source_audio.duration is not None and audio_stream.duration is not None:
+                delta = abs(audio_stream.duration - source_audio.duration)
+                if delta > tolerance:
+                    reasons.append(
+                        "Output audio duration changed unexpectedly: "
+                        f"track={audio_index}, source={source_audio.duration:.2f}s, output={audio_stream.duration:.2f}s"
+                    )
+                continue
+
             if audio_stream.duration is None or output_video_duration is None:
                 continue
+
             delta = abs(audio_stream.duration - output_video_duration)
             if delta > tolerance:
                 reasons.append(
