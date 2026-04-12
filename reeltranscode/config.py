@@ -73,9 +73,11 @@ class VideoPolicy:
 class OutputPolicy:
     mode: str = "keep_original"
     output_root: Path = Path("./optimized")
+    output_root_overrides: dict[Path, Path] = field(default_factory=dict)
     archive_root: Path = Path("./archive")
     overwrite: bool = False
     delete_original_after_success: bool = False
+    delete_original_after_success_roots: list[Path] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -222,9 +224,16 @@ class AppConfig:
         output = OutputPolicy(
             mode=str(output_raw.get("mode", "keep_original")),
             output_root=_path(output_raw.get("output_root"), Path("./optimized")),
+            output_root_overrides={
+                Path(source_root).expanduser(): Path(dest_root).expanduser()
+                for source_root, dest_root in dict(output_raw.get("output_root_overrides", {})).items()
+            },
             archive_root=_path(output_raw.get("archive_root"), Path("./archive")),
             overwrite=bool(output_raw.get("overwrite", False)),
             delete_original_after_success=bool(output_raw.get("delete_original_after_success", False)),
+            delete_original_after_success_roots=[
+                Path(path).expanduser() for path in output_raw.get("delete_original_after_success_roots", [])
+            ],
         )
 
         conc_raw = raw.get("concurrency", {})
@@ -296,12 +305,50 @@ class AppConfig:
     def watch_roots(self) -> list[Path]:
         return [path.expanduser().resolve() for path in self.watch.folders]
 
+    def resolved_watch_root_for(self, path: Path, source_root: Path | None = None) -> Path | None:
+        if source_root is not None:
+            return source_root.expanduser().resolve()
+
+        candidate = path.expanduser().resolve()
+        best = None
+        for root in self.watch_roots():
+            if path_contains(root, candidate):
+                if best is None or len(root.parts) > len(best.parts):
+                    best = root
+        return best
+
+    def output_root_for(self, source: Path, source_root: Path | None = None) -> Path:
+        resolved_source_root = self.resolved_watch_root_for(source, source_root)
+        resolved_overrides = {
+            watch_root.expanduser().resolve(): target_root.expanduser().resolve()
+            for watch_root, target_root in self.output.output_root_overrides.items()
+        }
+        if resolved_source_root is not None and resolved_source_root in resolved_overrides:
+            return resolved_overrides[resolved_source_root]
+        return self.output.output_root.expanduser().resolve()
+
+    def delete_original_after_success_for(self, source: Path, source_root: Path | None = None) -> bool:
+        if self.output.delete_original_after_success:
+            return True
+
+        resolved_source_root = self.resolved_watch_root_for(source, source_root)
+        if resolved_source_root is None:
+            return False
+
+        delete_roots = {path.expanduser().resolve() for path in self.output.delete_original_after_success_roots}
+        return resolved_source_root in delete_roots
+
     def managed_paths(self) -> dict[str, Path]:
-        return {
+        managed = {
             "output.output_root": self.output.output_root.expanduser().resolve(),
             "output.archive_root": self.output.archive_root.expanduser().resolve(),
             "paths.temp_dir": self.paths.temp_dir.expanduser().resolve(),
         }
+        for source_root, target_root in self.output.output_root_overrides.items():
+            managed[f"output.output_root_overrides[{source_root.expanduser().resolve()}]"] = (
+                target_root.expanduser().resolve()
+            )
+        return managed
 
     def is_excluded_from_watch(self, path: Path) -> bool:
         candidate = path.expanduser().resolve()
@@ -404,6 +451,27 @@ class AppConfig:
                         "watch.folders",
                         f"must not overlap managed path {field}: {watch_root}",
                     )
+
+        watch_roots = set(self.watch_roots())
+        for source_root in sorted(
+            (path.expanduser().resolve() for path in self.output.output_root_overrides),
+            key=str,
+        ):
+            if source_root not in watch_roots:
+                _error(
+                    "output.output_root_overrides",
+                    f"override source root must exactly match a configured watch folder: {source_root}",
+                )
+
+        for delete_root in sorted(
+            (path.expanduser().resolve() for path in self.output.delete_original_after_success_roots),
+            key=str,
+        ):
+            if delete_root not in watch_roots:
+                _error(
+                    "output.delete_original_after_success_roots",
+                    f"delete root must exactly match a configured watch folder: {delete_root}",
+                )
 
         return errors
 

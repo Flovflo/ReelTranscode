@@ -539,6 +539,59 @@ def test_replace_original_mode_keeps_series_tree_and_replaces_in_place():
     assert str(plan.target_path) == "/Volumes/Media/Series/Black Mirror/S1/Black.Mirror.S01E01.mp4"
 
 
+def test_keep_original_mode_can_route_series_tree_to_override_output_root():
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {
+                "folders": [
+                    "/Volumes/Giant_Boy_Plex/Films/Transcode",
+                    "/Volumes/Giant_Boy_Plex/Series/Transcode",
+                ]
+            },
+            "remux": {"preferred_container": "mp4"},
+            "output": {
+                "mode": "keep_original",
+                "output_root": "/Volumes/Giant_Boy_Plex/Films-opti",
+                "output_root_overrides": {
+                    "/Volumes/Giant_Boy_Plex/Series/Transcode": "/Volumes/Giant_Boy_Plex/Series-opti"
+                },
+            },
+        }
+    )
+    media = _media(
+        "/Volumes/Giant_Boy_Plex/Series/Transcode/TheBoys/S5/The.Boys.S05E01.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "pix_fmt": "yuv420p10le",
+                "width": 3840,
+                "height": 2160,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "eng"},
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    engine = DecisionEngine(cfg)
+    decision, comp = engine.decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Giant_Boy_Plex/Series/Transcode"))
+
+    assert str(plan.target_path) == "/Volumes/Giant_Boy_Plex/Series-opti/TheBoys/S5/The.Boys.S05E01.mp4"
+
+
 def test_dovi_muxer_plan_uses_wrapper_to_force_video_frame_rate(tmp_path: Path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

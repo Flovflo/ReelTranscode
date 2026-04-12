@@ -816,6 +816,7 @@ class CommandPlanner:
         if self.config.output.mode == "replace_original":
             return source.with_suffix(suffix)
 
+        output_root = self.config.output_root_for(source, source_root)
         relative = source.name
         if source_root:
             try:
@@ -823,7 +824,7 @@ class CommandPlanner:
             except ValueError:
                 relative = source.name
         rel_path = Path(relative).with_suffix(suffix)
-        return (self.config.output.output_root / rel_path).resolve()
+        return (output_root / rel_path).resolve()
 
     def _build_temp_path(self, source: Path, target_path: Path, *, hidden: bool = True, root: Path | None = None) -> Path:
         token = uuid.uuid4().hex[:10]

@@ -617,7 +617,7 @@ class PipelineProcessor:
                 source.unlink()
             return
 
-        if self.config.output.delete_original_after_success and source.exists() and source != target:
+        if self.config.delete_original_after_success_for(source, source_root) and source.exists() and source != target:
             source.unlink()
 
     def _cleanup_after_run(
