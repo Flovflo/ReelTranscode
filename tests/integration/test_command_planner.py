@@ -454,6 +454,64 @@ def test_mp4_plan_skips_aac_fallback_if_already_present():
     assert "AAC Stereo Fallback" not in cmd
 
 
+def test_mp4_plan_prefers_compatible_default_audio_and_fallback_source():
+    cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4"}})
+    media = _media(
+        "/Volumes/Media/Series/show_s02e01.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "pix_fmt": "yuv420p10le",
+                "width": 3840,
+                "height": 2160,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "dts",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "eng", "title": "English DTS-HD MA 5.1"},
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 2,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "eng", "title": "English DDP 5.1"},
+                "disposition": {"default": 0},
+            },
+            {
+                "index": 3,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "fre", "title": "French DDP 5.1"},
+                "disposition": {"default": 0},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Series"))
+
+    cmd = plan.steps[0].command
+    assert cmd[cmd.index("-disposition:a:0") + 1] == "0"
+    assert cmd[cmd.index("-disposition:a:1") + 1] == "default"
+    fallback_map_index = max(index for index, value in enumerate(cmd) if value == "-map")
+    assert cmd[fallback_map_index + 1] == "0:a:1"
+    assert cmd[cmd.index("-metadata:s:a:3") + 1] == "title=AAC Stereo Fallback"
+
+
 def test_mp4_plan_excludes_attached_picture_streams():
     cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4"}})
     media = _media(

@@ -362,10 +362,6 @@ class FFprobeAnalyzer:
         return details
 
     def _load_mediainfo(self, path: Path, format_name: str) -> dict[str, Any]:
-        container_names = {item.strip().lower() for item in format_name.split(",") if item.strip()}
-        if APPLE_CONTAINERS.isdisjoint(container_names):
-            return {}
-
         for mediainfo_bin in self._mediainfo_candidates():
             command = [mediainfo_bin, "--Output=JSON", str(path)]
             try:

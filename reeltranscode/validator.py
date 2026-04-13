@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from reeltranscode.analyzer import FFprobeAnalyzer
 from reeltranscode.config import AppConfig
@@ -149,7 +150,7 @@ class OutputValidator:
 
             source_title = _normalize_subtitle_title(source_track.title, source_hi)
             output_title = _normalize_subtitle_title(output_track.title, output_hi)
-            if source_title != output_title:
+            if not _subtitle_titles_equivalent(source_title, output_title):
                 reasons.append(
                     f"Subtitle track {index} title changed: "
                     f"source={source_track.title or '-'}, output={output_track.title or '-'}"
@@ -204,8 +205,8 @@ class OutputValidator:
                     f"source={source_fps:.3f}fps, output={output_fps:.3f}fps"
                 )
 
-        source_video_duration = source_video.duration or source.duration
-        output_video_duration = output_video.duration or output.duration
+        source_video_duration = _preferred_stream_duration(source, source_video, "Video") or source.duration
+        output_video_duration = _preferred_stream_duration(output, output_video, "Video") or output.duration
         if source_video_duration is not None and output_video_duration is not None:
             delta = abs(source_video_duration - output_video_duration)
             if delta > tolerance:
@@ -234,32 +235,54 @@ class OutputValidator:
 
         for audio_index, audio_stream in enumerate(output.audio_streams):
             source_audio = source.audio_streams[audio_index] if audio_index < len(source.audio_streams) else None
+            source_audio_duration = _preferred_stream_duration(source, source_audio, "Audio", fallback_index=audio_index)
+            output_audio_duration = _preferred_stream_duration(output, audio_stream, "Audio", fallback_index=audio_index)
+            source_audio_start = _preferred_stream_start_time(source, source_audio, "Audio", fallback_index=audio_index)
+            source_offset = None
+            if source_audio_start is not None and source_video.start_time is not None:
+                source_offset = max(0.0, source_audio_start - source_video.start_time)
 
-            if source_audio is not None and source_audio.duration is not None and audio_stream.duration is not None:
-                delta = abs(audio_stream.duration - source_audio.duration)
-                if delta > tolerance:
+            if source_audio_duration is not None and output_audio_duration is not None:
+                delta = abs(output_audio_duration - source_audio_duration)
+                if delta > tolerance and (
+                    source_offset is None
+                    or source_offset <= START_TIME_TOLERANCE_SECONDS
+                    or abs(output_audio_duration - (source_audio_duration + source_offset)) > tolerance
+                ):
                     reasons.append(
                         "Output audio duration changed unexpectedly: "
-                        f"track={audio_index}, source={source_audio.duration:.2f}s, output={audio_stream.duration:.2f}s"
+                        f"track={audio_index}, source={source_audio_duration:.2f}s, output={output_audio_duration:.2f}s"
                     )
                 continue
 
-            if audio_stream.duration is None:
+            if output_audio_duration is None:
                 continue
 
-            source_audio_durations = [track.duration for track in source.audio_streams if track.duration is not None]
+            source_audio_durations = [
+                duration
+                for candidate_index, track in enumerate(source.audio_streams)
+                if (
+                    duration := _accepted_source_audio_duration(
+                        source,
+                        source_video,
+                        track,
+                        fallback_index=candidate_index,
+                    )
+                )
+                is not None
+            ]
             if source_audio_durations:
-                if min(abs(audio_stream.duration - duration) for duration in source_audio_durations) <= tolerance:
+                if min(abs(output_audio_duration - duration) for duration in source_audio_durations) <= tolerance:
                     continue
 
             if output_video_duration is None:
                 continue
 
-            delta = abs(audio_stream.duration - output_video_duration)
+            delta = abs(output_audio_duration - output_video_duration)
             if delta > tolerance:
                 reasons.append(
                     "Output audio/video duration mismatch: "
-                    f"track={audio_index}, video={output_video_duration:.2f}s, audio={audio_stream.duration:.2f}s"
+                    f"track={audio_index}, video={output_video_duration:.2f}s, audio={output_audio_duration:.2f}s"
                 )
 
         reasons.extend(self._validate_stream_sync(source, output))
@@ -273,8 +296,8 @@ class OutputValidator:
             return []
 
         reasons: list[str] = []
-        source_video_start = source_video.start_time
-        output_video_start = output_video.start_time
+        source_video_start = _preferred_stream_start_time(source, source_video, "Video")
+        output_video_start = _preferred_stream_start_time(output, output_video, "Video")
 
         if source_video_start is not None and output_video_start is not None:
             delta = abs(output_video_start - source_video_start)
@@ -285,12 +308,12 @@ class OutputValidator:
                 )
 
         for audio_index, output_audio in enumerate(output.audio_streams):
-            output_audio_start = output_audio.start_time
+            output_audio_start = _preferred_stream_start_time(output, output_audio, "Audio", fallback_index=audio_index)
             if output_audio_start is None or output_video_start is None:
                 continue
 
             source_audio = source.audio_streams[audio_index] if audio_index < len(source.audio_streams) else None
-            source_audio_start = source_audio.start_time if source_audio else None
+            source_audio_start = _preferred_stream_start_time(source, source_audio, "Audio", fallback_index=audio_index)
 
             if source_audio_start is not None and source_video_start is not None:
                 source_offset = source_audio_start - source_video_start
@@ -302,6 +325,19 @@ class OutputValidator:
                         f"track={audio_index}, source={source_offset:.3f}s, output={output_offset:.3f}s"
                     )
                 continue
+
+            source_offsets = [
+                offset
+                for candidate_index, track in enumerate(source.audio_streams)
+                if (candidate_start := _preferred_stream_start_time(source, track, "Audio", fallback_index=candidate_index))
+                is not None
+                and source_video_start is not None
+                and (offset := candidate_start - source_video_start) is not None
+            ]
+            if source_offsets:
+                output_offset = output_audio_start - output_video_start
+                if min(abs(output_offset - offset) for offset in source_offsets) <= START_TIME_TOLERANCE_SECONDS:
+                    continue
 
             delta = abs(output_audio_start - output_video_start)
             if delta > START_TIME_TOLERANCE_SECONDS:
@@ -346,6 +382,138 @@ def _title_implies_hi(value: str | None) -> bool:
 def _normalize_subtitle_language(value: str | None) -> str:
     normalized = (value or "").strip().lower()
     return normalized or "und"
+
+
+def _subtitle_titles_equivalent(source_title: str | None, output_title: str | None) -> bool:
+    if source_title == output_title:
+        return True
+    if source_title is None or output_title is None:
+        return False
+    if _replacement_char_matches(source_title, output_title):
+        return True
+    return _replacement_char_matches(_ascii_fold(source_title), _ascii_fold(output_title))
+
+
+def _replacement_char_matches(left: str | None, right: str | None) -> bool:
+    if left is None or right is None or len(left) != len(right):
+        return False
+    for left_char, right_char in zip(left, right, strict=True):
+        if left_char == right_char:
+            continue
+        if "\ufffd" in {left_char, right_char}:
+            continue
+        return False
+    return True
+
+
+def _ascii_fold(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    return "".join(char for char in normalized if not unicodedata.combining(char))
+
+
+def _preferred_stream_duration(
+    media: MediaInfo,
+    stream,
+    track_type: str,
+    *,
+    fallback_index: int | None = None,
+) -> float | None:
+    mediainfo_track = _match_mediainfo_track(media, stream, track_type, fallback_index=fallback_index)
+    mediainfo_duration = _mediainfo_seconds(mediainfo_track.get("Duration")) if mediainfo_track else None
+    if mediainfo_duration is not None:
+        return mediainfo_duration
+    if stream is None:
+        return None
+    return stream.duration
+
+
+def _preferred_stream_start_time(
+    media: MediaInfo,
+    stream,
+    track_type: str,
+    *,
+    fallback_index: int | None = None,
+) -> float | None:
+    mediainfo_track = _match_mediainfo_track(media, stream, track_type, fallback_index=fallback_index)
+    mediainfo_delay = _mediainfo_seconds(mediainfo_track.get("Delay")) if mediainfo_track else None
+    if mediainfo_delay is not None:
+        return mediainfo_delay
+    if stream is None:
+        return None
+    return stream.start_time
+
+
+def _accepted_source_audio_duration(
+    media: MediaInfo,
+    source_video,
+    stream,
+    *,
+    fallback_index: int | None = None,
+) -> float | None:
+    duration = _preferred_stream_duration(media, stream, "Audio", fallback_index=fallback_index)
+    if duration is None:
+        return None
+    start_time = _preferred_stream_start_time(media, stream, "Audio", fallback_index=fallback_index)
+    video_start = _preferred_stream_start_time(media, source_video, "Video")
+    if start_time is None or video_start is None:
+        return duration
+    offset = start_time - video_start
+    if offset <= START_TIME_TOLERANCE_SECONDS:
+        return duration
+    return duration + offset
+
+
+def _match_mediainfo_track(
+    media: MediaInfo,
+    stream,
+    track_type: str,
+    *,
+    fallback_index: int | None = None,
+) -> dict:
+    tracks = _mediainfo_tracks(media.raw_mediainfo, track_type)
+    if not tracks:
+        return {}
+    if stream is not None:
+        for track in tracks:
+            stream_order = _mediainfo_track_int(track.get("StreamOrder"))
+            if stream_order is not None and stream_order == stream.index:
+                return track
+        for track in tracks:
+            track_id = _mediainfo_track_int(track.get("ID"))
+            if track_id is not None and (track_id - 1) == stream.index:
+                return track
+    if fallback_index is not None and fallback_index < len(tracks):
+        return tracks[fallback_index]
+    return {}
+
+
+def _mediainfo_tracks(raw_mediainfo: dict, track_type: str) -> list[dict]:
+    if not raw_mediainfo:
+        return []
+    media_node = raw_mediainfo.get("media", {}) or {}
+    tracks = media_node.get("track", []) or []
+    return [track for track in tracks if str(track.get("@type")) == track_type]
+
+
+def _mediainfo_track_int(value) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _mediainfo_seconds(value) -> float | None:
+    if value in {None, ""}:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _frame_rate_to_float(value: str | None) -> float | None:

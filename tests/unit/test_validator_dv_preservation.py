@@ -577,3 +577,130 @@ def test_validator_accepts_hi_marker_preserved_via_sdh_title_suffix():
     result = validator.validate(source, output, _decision())
 
     assert result.ok is True
+
+
+def test_validator_accepts_preserved_source_audio_delay_from_mediainfo():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(
+        Path("/tmp/source.mkv"),
+        "matroska,webm",
+        has_dv=False,
+        codec_tag=None,
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {"@type": "Video", "Duration": "3609.857", "Delay": "0.000"},
+                    {
+                        "@type": "Audio",
+                        "Duration": "3599.904",
+                        "Delay": "9.984",
+                        "Language": "fr",
+                        "Title": "French EAC3 5.1",
+                    },
+                    {
+                        "@type": "Audio",
+                        "Duration": "3609.888",
+                        "Delay": "0.000",
+                        "Language": "en",
+                        "Title": "English EAC3 5.1",
+                    },
+                ]
+            }
+        },
+    )
+    source.streams[0].duration = 3609.857
+    source.streams[0].start_time = 0.0
+    source.streams[1].duration = 3609.888
+    source.streams[1].start_time = 0.0
+
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="hvc1",
+    )
+    output.streams[0].duration = 3609.857
+    output.streams[0].start_time = 0.0
+    output.streams[1].duration = 3599.904
+    output.streams[1].start_time = 9.962
+    output.duration = 3609.888
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("start offset changed unexpectedly" in reason for reason in result.reasons)
+    assert not any("Output audio/video start time mismatch" in reason for reason in result.reasons)
+
+
+def test_validator_accepts_subtitle_title_with_single_replacement_char():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(Path("/tmp/source.mkv"), "matroska,webm", has_dv=False, codec_tag=None)
+    source.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "disposition": {"default": 0, "forced": 0},
+                "tags": {"language": "nor", "title": "Norwegian (Bokmål)"},
+            }
+        )
+    )
+
+    output = _media(Path("/tmp/output.mp4"), "mov,mp4,m4a,3gp,3g2,mj2", has_dv=False, codec_tag="hvc1")
+    output.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "subtitle",
+                "codec_name": "mov_text",
+                "codec_tag_string": "tx3g",
+                "disposition": {"default": 0, "forced": 0},
+                "tags": {"language": "nor", "title": "Norwegian (Bokm\ufffdl)"},
+            }
+        )
+    )
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("title changed" in reason for reason in result.reasons)
+
+
+def test_validator_accepts_audio_duration_when_positive_source_delay_is_flattened():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(
+        Path("/tmp/source.mkv"),
+        "matroska,webm",
+        has_dv=False,
+        codec_tag=None,
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {"@type": "Video", "Duration": "3777.274", "Delay": "0.000"},
+                    {"@type": "Audio", "Duration": "3766.272", "Delay": "12.990"},
+                ]
+            }
+        },
+    )
+    source.streams[0].duration = 3777.274
+    source.streams[0].start_time = 0.0
+    source.streams[1].duration = 3766.272
+    source.streams[1].start_time = 0.0
+
+    output = _media(Path("/tmp/output.mp4"), "mov,mp4,m4a,3gp,3g2,mj2", has_dv=False, codec_tag="hvc1")
+    output.streams[0].duration = 3777.274
+    output.streams[0].start_time = 0.0
+    output.streams[1].duration = 3779.262
+    output.streams[1].start_time = 12.990
+    output.duration = 3777.274
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Output audio duration changed unexpectedly" in reason for reason in result.reasons)

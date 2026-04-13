@@ -618,6 +618,25 @@ class CommandPlanner:
         args: list[str] = []
         has_aac_stereo = False
         fallback_source_audio_index = 0
+        target_is_mp4 = self._target_suffix() == ".mp4"
+        compatible_audio_indices = [
+            source_audio_index
+            for source_audio_index, stream in enumerate(media.audio_streams)
+            if (stream.codec_name or "").lower() in SUPPORTED_AUDIO
+        ]
+        default_compatible_audio_index = next(
+            (
+                source_audio_index
+                for source_audio_index in compatible_audio_indices
+                if media.audio_streams[source_audio_index].disposition.default
+            ),
+            None,
+        )
+        preferred_default_audio_index = (
+            default_compatible_audio_index
+            if default_compatible_audio_index is not None
+            else (compatible_audio_indices[0] if target_is_mp4 and compatible_audio_indices else None)
+        )
         for source_audio_index, stream in enumerate(media.audio_streams):
             if stream.disposition.default:
                 fallback_source_audio_index = source_audio_index
@@ -627,6 +646,13 @@ class CommandPlanner:
                 has_aac_stereo = True
             if include_default_maps:
                 args.extend(["-map", f"{input_index}:a:{source_audio_index}"])
+
+        if target_is_mp4 and compatible_audio_indices:
+            fallback_source_audio_index = (
+                default_compatible_audio_index
+                if default_compatible_audio_index is not None
+                else compatible_audio_indices[0]
+            )
 
         args.extend(["-c:a", "copy"])
 
@@ -645,12 +671,14 @@ class CommandPlanner:
             args.extend([f"-metadata:s:a:{out_audio_index}", f"language={language}"])
             if stream.title:
                 args.extend([f"-metadata:s:a:{out_audio_index}", f"title={stream.title}"])
-            if stream.disposition.default:
+            should_be_default = stream.disposition.default
+            if preferred_default_audio_index is not None:
+                should_be_default = out_audio_index == preferred_default_audio_index
+            if should_be_default:
                 args.extend([f"-disposition:a:{out_audio_index}", "default"])
             else:
                 args.extend([f"-disposition:a:{out_audio_index}", "0"])
 
-        target_is_mp4 = self._target_suffix() == ".mp4"
         if (
             target_is_mp4
             and self.config.audio.ensure_aac_fallback_stereo_when_missing
