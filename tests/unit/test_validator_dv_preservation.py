@@ -818,3 +818,51 @@ def test_validator_accepts_audio_duration_when_positive_source_delay_is_flattene
 
     assert result.ok is True
     assert not any("Output audio duration changed unexpectedly" in reason for reason in result.reasons)
+
+
+def test_validator_uses_source_preferred_video_duration_when_container_runs_long():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(
+        Path("/tmp/source.mkv"),
+        "matroska,webm",
+        has_dv=False,
+        codec_tag=None,
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {"@type": "Video", "StreamOrder": "0", "ID": "1", "Duration": "4155.110", "Delay": "0.005"},
+                    {"@type": "Audio", "StreamOrder": "1", "ID": "2", "Duration": "4155.136", "Delay": "0.000", "Language": "fr"},
+                    {"@type": "Audio", "StreamOrder": "2", "ID": "3", "Duration": "4155.136", "Delay": "0.000", "Language": "en"},
+                ]
+            }
+        },
+    )
+    source.duration = 4402.336
+    source.streams[0].start_time = 0.005
+    source.streams[1].start_time = 0.0
+
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="hvc1",
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {"@type": "Video", "StreamOrder": "0", "ID": "1", "Duration": "4155.110", "Delay": "0.005", "CodecID": "hvc1"},
+                    {"@type": "Audio", "StreamOrder": "1", "ID": "2", "Duration": "4155.136", "Delay": "0.000", "Language": "fr"},
+                ]
+            }
+        },
+    )
+    output.duration = 4155.110
+    output.streams[0].start_time = 0.005
+    output.streams[1].start_time = 0.0
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Duration delta too high" in reason for reason in result.reasons)

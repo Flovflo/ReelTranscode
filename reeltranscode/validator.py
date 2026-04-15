@@ -593,14 +593,19 @@ def _frame_rate_to_float(value: str | None) -> float | None:
 
 def _expected_output_duration(source: MediaInfo, tolerance: float) -> float | None:
     source_video = source.primary_video
+    source_video_duration = _preferred_stream_duration(source, source_video, "Video")
     if source.duration is not None:
-        if source_video is None or source_video.duration is None:
+        if source_video is None or source_video_duration is None:
             return source.duration
-        if abs(source.duration - source_video.duration) > tolerance:
-            source_audio_durations = [track.duration for track in source.audio_streams if track.duration is not None]
+        if abs(source.duration - source_video_duration) > tolerance:
+            source_audio_durations = [
+                duration
+                for index, track in enumerate(source.audio_streams)
+                if (duration := _preferred_stream_duration(source, track, "Audio", fallback_index=index)) is not None
+            ]
             if source_audio_durations and min(abs(duration - source.duration) for duration in source_audio_durations) <= tolerance:
                 return source.duration
-            return source_video.duration
-    if source_video and source_video.duration is not None:
-        return source_video.duration
+            return source_video_duration
+    if source_video_duration is not None:
+        return source_video_duration
     return source.duration
