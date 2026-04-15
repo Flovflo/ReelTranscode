@@ -81,6 +81,7 @@ class LibraryWatcher:
 
         work_queue: queue.Queue[QueuedPath] = queue.Queue()
         observers: list[Observer] = []
+        watch_roots: list[Path] = []
         self.state_store.update_runtime_state(
             watch_running=True,
             queued_paths=0,
@@ -92,12 +93,7 @@ class LibraryWatcher:
             if self.cfg.is_excluded_from_watch(root):
                 LOGGER.warning("Skipping watch folder because it overlaps a managed path: %s", root)
                 continue
-            handler = _MediaEventHandler(self.cfg, root, work_queue, self)
-            observer = Observer()
-            observer.schedule(handler, str(root), recursive=self.cfg.watch.recursive)
-            observer.start()
-            observers.append(observer)
-            LOGGER.info("Watching folder: %s", root)
+            watch_roots.append(root)
             queued = self._seed_existing_files(root, work_queue)
             if queued > 0:
                 LOGGER.info("Queued %d existing media files from: %s", queued, root)
@@ -108,6 +104,14 @@ class LibraryWatcher:
         ]
         for worker in workers:
             worker.start()
+
+        for root in watch_roots:
+            handler = _MediaEventHandler(self.cfg, root, work_queue, self)
+            observer = Observer()
+            observer.schedule(handler, str(root), recursive=self.cfg.watch.recursive)
+            observer.start()
+            observers.append(observer)
+            LOGGER.info("Watching folder: %s", root)
 
         try:
             while not self._stop_event.is_set():

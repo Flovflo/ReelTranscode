@@ -35,7 +35,7 @@ class StateStore:
     def __init__(self, db_path: Path):
         ensure_parent(db_path)
         self.db_path = db_path
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
@@ -116,10 +116,11 @@ class StateStore:
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
 
     def get_file_record(self, path: Path) -> FileRecord | None:
-        row = self._conn.execute(
-            "SELECT path, stream_fp, metadata_fp, size, mtime_ns, last_status, last_job_id FROM files WHERE path=?",
-            (str(path),),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT path, stream_fp, metadata_fp, size, mtime_ns, last_status, last_job_id FROM files WHERE path=?",
+                (str(path),),
+            ).fetchone()
         if not row:
             return None
         return FileRecord(
@@ -241,13 +242,14 @@ class StateStore:
             return len(rows)
 
     def get_runtime_state(self) -> RuntimeState:
-        row = self._conn.execute(
-            """
-            SELECT watch_running, watch_paused, queued_paths, active_workers, max_workers, updated_at
-            FROM runtime_state
-            WHERE singleton=1
-            """
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT watch_running, watch_paused, queued_paths, active_workers, max_workers, updated_at
+                FROM runtime_state
+                WHERE singleton=1
+                """
+            ).fetchone()
         if row is None:
             return RuntimeState(False, False, 0, 0, 0, now_utc_iso())
 
@@ -316,35 +318,36 @@ class StateStore:
             "total": 0,
         }
 
-        rows = self._conn.execute(
-            "SELECT status, COUNT(*) AS c FROM jobs GROUP BY status"
-        ).fetchall()
-        for row in rows:
-            status = str(row["status"])
-            count = int(row["c"])
-            if status in summary:
-                summary[status] = count
-            summary["total"] += count
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT status, COUNT(*) AS c FROM jobs GROUP BY status"
+            ).fetchall()
+            for row in rows:
+                status = str(row["status"])
+                count = int(row["c"])
+                if status in summary:
+                    summary[status] = count
+                summary["total"] += count
 
-        latest_rows = self._conn.execute(
-            """
-            SELECT
-                job_id,
-                status,
-                case_label,
-                strategy,
-                source_path,
-                target_path,
-                started_at,
-                finished_at,
-                error_class,
-                error_message
-            FROM jobs
-            ORDER BY COALESCE(finished_at, started_at) DESC
-            LIMIT ?
-            """,
-            (capped_limit,),
-        ).fetchall()
+            latest_rows = self._conn.execute(
+                """
+                SELECT
+                    job_id,
+                    status,
+                    case_label,
+                    strategy,
+                    source_path,
+                    target_path,
+                    started_at,
+                    finished_at,
+                    error_class,
+                    error_message
+                FROM jobs
+                ORDER BY COALESCE(finished_at, started_at) DESC
+                LIMIT ?
+                """,
+                (capped_limit,),
+            ).fetchall()
         latest_jobs = [
             {
                 "job_id": row["job_id"],

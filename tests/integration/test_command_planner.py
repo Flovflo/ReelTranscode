@@ -9,7 +9,7 @@ from reeltranscode.models import CaseLabel, Decision, MediaInfo, StreamInfo, Str
 from reeltranscode.planner import CommandPlanner
 
 
-def _media(path: str, format_name: str, streams: list[dict]) -> MediaInfo:
+def _media(path: str, format_name: str, streams: list[dict], raw_probe: dict | None = None) -> MediaInfo:
     return MediaInfo(
         path=Path(path),
         format_name=format_name,
@@ -17,7 +17,7 @@ def _media(path: str, format_name: str, streams: list[dict]) -> MediaInfo:
         bit_rate=22_000_000,
         size=13_000_000_000,
         streams=[StreamInfo.from_probe(s) for s in streams],
-        raw_probe={},
+        raw_probe=raw_probe or {"streams": streams},
     )
 
 
@@ -323,6 +323,64 @@ def test_video_transcode_plan_uses_videotoolbox():
 
     cmd = plan.steps[0].command
     assert "hevc_videotoolbox" in cmd
+
+
+def test_plan_drops_empty_image_subtitles_instead_of_scheduling_ocr(tmp_path: Path):
+    cfg = AppConfig.from_dict(
+        {
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+            "subtitles": {"ocr_image_subtitles": True},
+        }
+    )
+    media_root = tmp_path / "media" / "Movies"
+    media_root.mkdir(parents=True)
+    streams = [
+        {
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "hevc",
+            "profile": "Main 10",
+            "pix_fmt": "yuv420p10le",
+            "width": 1920,
+            "height": 1080,
+            "avg_frame_rate": "24/1",
+            "disposition": {"default": 1},
+        },
+        {
+            "index": 1,
+            "codec_type": "audio",
+            "codec_name": "eac3",
+            "channels": 6,
+            "channel_layout": "5.1",
+            "tags": {"language": "eng"},
+            "disposition": {"default": 1},
+        },
+        {
+            "index": 2,
+            "codec_type": "subtitle",
+            "codec_name": "hdmv_pgs_subtitle",
+            "tags": {"language": "eng", "NUMBER_OF_FRAMES": "42", "NUMBER_OF_BYTES": "2048"},
+            "disposition": {"default": 0},
+        },
+        {
+            "index": 3,
+            "codec_type": "subtitle",
+            "codec_name": "hdmv_pgs_subtitle",
+            "tags": {"language": "eng", "NUMBER_OF_FRAMES": "0", "NUMBER_OF_BYTES": "0", "DURATION": "00:00:00.000000000"},
+            "disposition": {"default": 0},
+        },
+    ]
+    media = _media(str(media_root / "movie.mkv"), "matroska,webm", streams)
+
+    engine = DecisionEngine(cfg)
+    decision, comp = engine.decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, media_root)
+
+    assert len(plan.ocr_subtitle_tasks) == 1
+    assert plan.ocr_subtitle_tasks[0].source_subtitle_index == 0
+    assert plan.dropped_subtitle_streams == [1]
+    assert any("Dropped empty image subtitle stream 1" in note for note in plan.notes)
 
 
 def test_hdr_transcode_forces_hevc_main10_pipeline():

@@ -3,7 +3,7 @@ from __future__ import annotations
 import queue
 import threading
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from reeltranscode.config import AppConfig
 from reeltranscode.scanner import iter_media_files
@@ -130,6 +130,52 @@ def test_worker_waits_for_non_seeded_items(tmp_path):
 
         wait_mock.assert_called_once()
         assert processed == [(str(media), str(root))]
+    finally:
+        state.close()
+
+
+def test_run_forever_seeds_before_registering_observers(tmp_path):
+    root = tmp_path / "watch"
+    root.mkdir(parents=True)
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {"folders": [str(root)]},
+            "concurrency": {"max_workers": 1},
+        }
+    )
+    watcher, state = _make_watcher(cfg, tmp_path)
+    events: list[str] = []
+
+    class _FakeObserver:
+        def schedule(self, handler, path, recursive):  # noqa: ANN001
+            events.append(f"schedule:{path}:{recursive}")
+
+        def start(self):
+            events.append("observer_start")
+
+        def stop(self):
+            events.append("observer_stop")
+
+        def join(self, timeout=None):  # noqa: ANN001
+            events.append("observer_join")
+
+    fake_thread = Mock()
+
+    def _start_worker():
+        events.append("worker_start")
+        watcher.stop()
+
+    fake_thread.start.side_effect = _start_worker
+
+    try:
+        with (
+            patch.object(watcher, "_seed_existing_files", side_effect=lambda root_path, work_queue: events.append(f"seed:{root_path}") or 1),
+            patch("reeltranscode.watcher.Observer", return_value=_FakeObserver()),
+            patch("reeltranscode.watcher.threading.Thread", return_value=fake_thread),
+        ):
+            watcher.run_forever(lambda *_args, **_kwargs: None)
+
+        assert events[:3] == [f"seed:{root}", "worker_start", f"schedule:{root}:True"]
     finally:
         state.close()
 

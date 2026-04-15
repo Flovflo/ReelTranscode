@@ -518,6 +518,120 @@ def test_validator_uses_source_stream_duration_tags_as_expected_timeline():
     assert not any("Duration delta too high" in reason for reason in result.reasons)
 
 
+def test_validator_accepts_mp4_video_start_time_quirk_when_audio_starts_are_preserved():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+
+    source = MediaInfo(
+        path=Path("/tmp/source.mkv"),
+        format_name="matroska,webm",
+        duration=5292.121,
+        bit_rate=7_900_000,
+        size=5_255_045_243,
+        streams=[
+            StreamInfo.from_probe(
+                {
+                    "index": 0,
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "codec_tag_string": None,
+                    "pix_fmt": "yuv420p",
+                    "duration": "5292.121000",
+                    "start_time": "0.001000",
+                    "disposition": {"default": 1},
+                }
+            ),
+            StreamInfo.from_probe(
+                {
+                    "index": 1,
+                    "codec_type": "audio",
+                    "codec_name": "eac3",
+                    "duration": "5282.144000",
+                    "start_time": "0.000000",
+                    "disposition": {"default": 1},
+                    "tags": {"language": "fre"},
+                }
+            ),
+            StreamInfo.from_probe(
+                {
+                    "index": 2,
+                    "codec_type": "audio",
+                    "codec_name": "eac3",
+                    "duration": "5272.096000",
+                    "start_time": "0.024000",
+                    "disposition": {"default": 0},
+                    "tags": {"language": "eng"},
+                }
+            ),
+        ],
+        raw_probe={},
+        raw_mediainfo={},
+    )
+
+    output = MediaInfo(
+        path=Path("/tmp/output.mp4"),
+        format_name="mov,mp4,m4a,3gp,3g2,mj2",
+        duration=5292.121,
+        bit_rate=8_100_000,
+        size=5_255_045_243,
+        streams=[
+            StreamInfo.from_probe(
+                {
+                    "index": 0,
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "codec_tag_string": "avc1",
+                    "pix_fmt": "yuv420p",
+                    "duration": "5292.121000",
+                    "start_time": "2.629000",
+                    "disposition": {"default": 1},
+                }
+            ),
+            StreamInfo.from_probe(
+                {
+                    "index": 1,
+                    "codec_type": "audio",
+                    "codec_name": "eac3",
+                    "duration": "5282.144000",
+                    "start_time": "0.000000",
+                    "disposition": {"default": 1},
+                    "tags": {"language": "fre"},
+                }
+            ),
+            StreamInfo.from_probe(
+                {
+                    "index": 2,
+                    "codec_type": "audio",
+                    "codec_name": "eac3",
+                    "duration": "5272.096000",
+                    "start_time": "0.024000",
+                    "disposition": {"default": 0},
+                    "tags": {"language": "eng"},
+                }
+            ),
+            StreamInfo.from_probe(
+                {
+                    "index": 3,
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "duration": "5282.144000",
+                    "start_time": "0.000000",
+                    "disposition": {"default": 0},
+                    "tags": {"language": "fre"},
+                }
+            ),
+        ],
+        raw_probe={},
+        raw_mediainfo={},
+    )
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Video start time changed unexpectedly" in reason for reason in result.reasons)
+    assert not any("Output audio/video start offset changed unexpectedly" in reason for reason in result.reasons)
+
+
 def test_validator_accepts_hi_marker_preserved_via_sdh_title_suffix():
     cfg = AppConfig.from_dict({})
     validator = OutputValidator(cfg)

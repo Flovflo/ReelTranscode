@@ -298,18 +298,30 @@ class OutputValidator:
         reasons: list[str] = []
         source_video_start = _preferred_stream_start_time(source, source_video, "Video")
         output_video_start = _preferred_stream_start_time(output, output_video, "Video")
+        normalized_output_video_start = output_video_start
 
         if source_video_start is not None and output_video_start is not None:
-            delta = abs(output_video_start - source_video_start)
-            if delta > START_TIME_TOLERANCE_SECONDS:
-                reasons.append(
-                    "Video start time changed unexpectedly: "
-                    f"source={source_video_start:.3f}s, output={output_video_start:.3f}s"
-                )
+            if _looks_like_mp4_video_start_time_quirk(
+                source,
+                output,
+                source_video,
+                output_video,
+                source_video_start=source_video_start,
+                output_video_start=output_video_start,
+                duration_tolerance=self.config.validation.verify_duration_tolerance_seconds,
+            ):
+                normalized_output_video_start = source_video_start
+            else:
+                delta = abs(output_video_start - source_video_start)
+                if delta > START_TIME_TOLERANCE_SECONDS:
+                    reasons.append(
+                        "Video start time changed unexpectedly: "
+                        f"source={source_video_start:.3f}s, output={output_video_start:.3f}s"
+                    )
 
         for audio_index, output_audio in enumerate(output.audio_streams):
             output_audio_start = _preferred_stream_start_time(output, output_audio, "Audio", fallback_index=audio_index)
-            if output_audio_start is None or output_video_start is None:
+            if output_audio_start is None or normalized_output_video_start is None:
                 continue
 
             source_audio = source.audio_streams[audio_index] if audio_index < len(source.audio_streams) else None
@@ -317,7 +329,7 @@ class OutputValidator:
 
             if source_audio_start is not None and source_video_start is not None:
                 source_offset = source_audio_start - source_video_start
-                output_offset = output_audio_start - output_video_start
+                output_offset = output_audio_start - normalized_output_video_start
                 delta = abs(output_offset - source_offset)
                 if delta > START_TIME_TOLERANCE_SECONDS:
                     reasons.append(
@@ -335,15 +347,15 @@ class OutputValidator:
                 and (offset := candidate_start - source_video_start) is not None
             ]
             if source_offsets:
-                output_offset = output_audio_start - output_video_start
+                output_offset = output_audio_start - normalized_output_video_start
                 if min(abs(output_offset - offset) for offset in source_offsets) <= START_TIME_TOLERANCE_SECONDS:
                     continue
 
-            delta = abs(output_audio_start - output_video_start)
+            delta = abs(output_audio_start - normalized_output_video_start)
             if delta > START_TIME_TOLERANCE_SECONDS:
                 reasons.append(
                     "Output audio/video start time mismatch: "
-                    f"track={audio_index}, video={output_video_start:.3f}s, audio={output_audio_start:.3f}s"
+                    f"track={audio_index}, video={normalized_output_video_start:.3f}s, audio={output_audio_start:.3f}s"
                 )
 
         return reasons
@@ -461,6 +473,51 @@ def _accepted_source_audio_duration(
     if offset <= START_TIME_TOLERANCE_SECONDS:
         return duration
     return duration + offset
+
+
+def _looks_like_mp4_video_start_time_quirk(
+    source: MediaInfo,
+    output: MediaInfo,
+    source_video,
+    output_video,
+    *,
+    source_video_start: float,
+    output_video_start: float,
+    duration_tolerance: float,
+) -> bool:
+    if "mp4" not in output.container_names and "mov" not in output.container_names:
+        return False
+    if abs(source_video_start) > START_TIME_TOLERANCE_SECONDS:
+        return False
+    if output_video_start <= START_TIME_TOLERANCE_SECONDS:
+        return False
+
+    source_video_duration = _preferred_stream_duration(source, source_video, "Video") or source.duration
+    output_video_duration = _preferred_stream_duration(output, output_video, "Video") or output.duration
+    if (
+        source_video_duration is not None
+        and output_video_duration is not None
+        and abs(output_video_duration - source_video_duration) > duration_tolerance
+    ):
+        return False
+
+    source_audio_starts = [
+        start_time
+        for index, track in enumerate(source.audio_streams)
+        if (start_time := _preferred_stream_start_time(source, track, "Audio", fallback_index=index)) is not None
+    ]
+    output_audio_starts = [
+        start_time
+        for index, track in enumerate(output.audio_streams)
+        if (start_time := _preferred_stream_start_time(output, track, "Audio", fallback_index=index)) is not None
+    ]
+    if not source_audio_starts or not output_audio_starts:
+        return False
+
+    return all(
+        min(abs(output_start - source_start) for source_start in source_audio_starts) <= START_TIME_TOLERANCE_SECONDS
+        for output_start in output_audio_starts
+    )
 
 
 def _match_mediainfo_track(

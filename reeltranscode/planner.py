@@ -438,6 +438,10 @@ class CommandPlanner:
         if not ocr_subtitle_tasks:
             output_sub_index = 0
             for source_sub_index, stream in enumerate(media.subtitle_streams):
+                if self._is_empty_image_subtitle_stream(media, stream):
+                    dropped_subtitle_streams.append(source_sub_index)
+                    notes.append(f"Dropped empty image subtitle stream {source_sub_index} (no frames/bytes)")
+                    continue
                 if stream.is_image_subtitle:
                     if self.config.subtitles.drop_incompatible_image_subtitles:
                         dropped_subtitle_streams.append(source_sub_index)
@@ -731,6 +735,10 @@ class CommandPlanner:
         next_ocr_input_index = ocr_input_start_index
         for source_sub_index, stream in enumerate(media.subtitle_streams):
             lang = (stream.language or "und").lower()
+            if self._is_empty_image_subtitle_stream(media, stream):
+                dropped_subtitle_streams.append(source_sub_index)
+                notes.append(f"Dropped empty image subtitle stream {source_sub_index} (no frames/bytes)")
+                continue
             if stream.is_image_subtitle:
                 if self.config.subtitles.ocr_image_subtitles:
                     if workspace_dir is None:
@@ -790,6 +798,8 @@ class CommandPlanner:
         if self._target_suffix() != ".mp4":
             return
         for source_sub_index, stream in enumerate(media.subtitle_streams):
+            if self._is_empty_image_subtitle_stream(media, stream):
+                continue
             if stream.is_image_subtitle:
                 if self.config.subtitles.ocr_image_subtitles:
                     continue
@@ -803,16 +813,73 @@ class CommandPlanner:
     def _needs_subtitle_ocr(self, media: MediaInfo) -> bool:
         if self._target_suffix() != ".mp4" or not self.config.subtitles.ocr_image_subtitles:
             return False
-        return any(stream.is_image_subtitle for stream in media.subtitle_streams)
+        return any(
+            stream.is_image_subtitle and not self._is_empty_image_subtitle_stream(media, stream)
+            for stream in media.subtitle_streams
+        )
 
     def _build_ocr_subtitle_tasks(self, media: MediaInfo, workspace_dir: Path) -> list[OcrSubtitleTask]:
         tasks: list[OcrSubtitleTask] = []
         if not self.config.subtitles.ocr_image_subtitles:
             return tasks
         for source_sub_index, stream in enumerate(media.subtitle_streams):
-            if stream.is_image_subtitle:
+            if stream.is_image_subtitle and not self._is_empty_image_subtitle_stream(media, stream):
                 tasks.append(self._build_ocr_subtitle_task(stream, source_sub_index, workspace_dir))
         return tasks
+
+    def _is_empty_image_subtitle_stream(self, media: MediaInfo, stream) -> bool:
+        if not stream.is_image_subtitle:
+            return False
+        tags = self._probe_stream_tags(media, stream)
+        frame_count = self._probe_stat_int(tags, "NUMBER_OF_FRAMES")
+        byte_count = self._probe_stat_int(tags, "NUMBER_OF_BYTES")
+        duration_seconds = self._probe_stat_duration(tags, "DURATION")
+        return (
+            (frame_count == 0 and byte_count == 0)
+            or (frame_count == 0 and duration_seconds == 0.0)
+            or (byte_count == 0 and duration_seconds == 0.0)
+        )
+
+    @staticmethod
+    def _probe_stream_tags(media: MediaInfo, stream) -> dict:
+        for raw_stream in media.raw_probe.get("streams", []) or []:
+            try:
+                if int(raw_stream.get("index", -1)) == stream.index:
+                    return raw_stream.get("tags", {}) or {}
+            except (TypeError, ValueError):
+                continue
+        return {}
+
+    @staticmethod
+    def _probe_stat_int(tags: dict, key: str) -> int | None:
+        value = tags.get(key)
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _probe_stat_duration(tags: dict, key: str) -> float | None:
+        value = tags.get(key)
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        hms = text.split(".", 1)[0]
+        parts = hms.split(":")
+        if len(parts) != 3:
+            return None
+        try:
+            hours, minutes, seconds = (float(part) for part in parts)
+        except ValueError:
+            return None
+        return (hours * 3600.0) + (minutes * 60.0) + seconds
 
     def _build_ocr_subtitle_task(
         self,
