@@ -62,7 +62,12 @@ def is_transient_media_path(path: Path) -> bool:
 
 
 def is_media_file(path: Path, allowed_extensions: set[str]) -> bool:
-    return path.is_file() and path.suffix.lower() in allowed_extensions
+    return (
+        path.is_file()
+        and path.suffix.lower() in allowed_extensions
+        and not is_runtime_temp_path(path)
+        and not is_transient_media_path(path)
+    )
 
 
 def path_contains(parent: Path, child: Path) -> bool:

@@ -27,6 +27,9 @@ class DecisionEngine:
         reasons.extend(audio_reasons)
         reasons.extend(subtitle_reasons)
 
+        requires_container_normalization, normalization_reasons = FFprobeAnalyzer.mp4_container_needs_normalization(media)
+        reasons.extend(normalization_reasons)
+
         requires_hevc_retag = self._requires_hevc_retag(media)
         if requires_hevc_retag:
             reasons.append(
@@ -35,6 +38,7 @@ class DecisionEngine:
 
         requires_container_change = (
             (not container_ok and self.config.remux.preferred_container == "mp4")
+            or requires_container_normalization
             or requires_hevc_retag
         )
         requires_audio_fix = not audio_ok
@@ -118,7 +122,7 @@ class DecisionEngine:
         if comp.dv_present:
             profile = comp.dv_profile or "unknown"
             safe_profile = profile in self.config.dolby_vision.safe_profiles
-            container_switch = comp.requires_container_change
+            container_switch = not comp.container_ok and self.config.remux.preferred_container == "mp4"
             if not safe_profile or (container_switch and not self.config.dolby_vision.remux_dv_from_mkv_to_mp4_is_safe):
                 dv_fragile = True
                 reasons.append(

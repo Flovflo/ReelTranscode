@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from reeltranscode.models import JobStatus
-from reeltranscode.utils import ensure_parent, now_utc_iso
+from reeltranscode.utils import ensure_parent, is_runtime_temp_path, is_transient_media_path, now_utc_iso
 
 
 @dataclass(slots=True)
@@ -317,20 +317,35 @@ class StateStore:
             "skipped": 0,
             "total": 0,
         }
+        latest_per_source_cte = """
+            WITH ranked_jobs AS (
+                SELECT
+                    rowid AS row_id,
+                    job_id,
+                    status,
+                    case_label,
+                    strategy,
+                    source_path,
+                    target_path,
+                    started_at,
+                    finished_at,
+                    error_class,
+                    error_message,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY source_path
+                        ORDER BY
+                            COALESCE(finished_at, started_at) DESC,
+                            started_at DESC,
+                            rowid DESC
+                    ) AS rn
+                FROM jobs
+            )
+        """
 
         with self._lock:
             rows = self._conn.execute(
-                "SELECT status, COUNT(*) AS c FROM jobs GROUP BY status"
-            ).fetchall()
-            for row in rows:
-                status = str(row["status"])
-                count = int(row["c"])
-                if status in summary:
-                    summary[status] = count
-                summary["total"] += count
-
-            latest_rows = self._conn.execute(
-                """
+                latest_per_source_cte
+                + """
                 SELECT
                     job_id,
                     status,
@@ -342,12 +357,23 @@ class StateStore:
                     finished_at,
                     error_class,
                     error_message
-                FROM jobs
-                ORDER BY COALESCE(finished_at, started_at) DESC
-                LIMIT ?
-                """,
-                (capped_limit,),
+                FROM ranked_jobs
+                WHERE rn = 1
+                """
             ).fetchall()
+        visible_rows = [row for row in rows if _include_status_source_path(row["source_path"])]
+        for row in visible_rows:
+            status = str(row["status"])
+            if status in summary:
+                summary[status] += 1
+            summary["total"] += 1
+
+        latest_rows = sorted(
+            visible_rows,
+            key=lambda row: (row["finished_at"] or row["started_at"] or "", row["job_id"]),
+            reverse=True,
+        )[:capped_limit]
+
         latest_jobs = [
             {
                 "job_id": row["job_id"],
@@ -432,3 +458,12 @@ class StateStore:
                     """,
                     (stream_fp, str(path), job_id, now_utc_iso()),
                 )
+
+
+def _include_status_source_path(source_path: str) -> bool:
+    path = Path(source_path)
+    if is_runtime_temp_path(path):
+        return False
+    if is_transient_media_path(path):
+        return False
+    return True

@@ -239,3 +239,84 @@ def test_mark_incomplete_running_jobs_failed_reconciles_stale_entries(tmp_path: 
         assert snapshot["latest_jobs"][0]["finished_at"] is not None
     finally:
         state.close()
+
+
+def test_status_snapshot_counts_only_latest_state_per_source(tmp_path: Path):
+    cfg = AppConfig.from_dict({"paths": {"state_db": str(tmp_path / "state.db")}})
+    state = StateStore(cfg.paths.state_db)
+    source = tmp_path / "movie.mkv"
+    try:
+        state.mark_job_started(
+            job_id="failed-job",
+            source_path=source,
+            target_path=tmp_path / "movie.mp4",
+            strategy="subtitle_only",
+            case_label="D_SUBTITLE_ONLY",
+            stream_fp="stream-fp-1",
+            metadata_fp="meta-fp-1",
+        )
+        state.mark_job_finished(
+            job_id="failed-job",
+            status=JobStatus.FAILED,
+            error_class="RuntimeError",
+            error_message="boom",
+            report_path=None,
+        )
+        state.mark_job_started(
+            job_id="success-job",
+            source_path=source,
+            target_path=tmp_path / "movie.mp4",
+            strategy="subtitle_only",
+            case_label="D_SUBTITLE_ONLY",
+            stream_fp="stream-fp-2",
+            metadata_fp="meta-fp-2",
+        )
+        state.mark_job_finished(
+            job_id="success-job",
+            status=JobStatus.SUCCESS,
+            error_class=None,
+            error_message=None,
+            report_path=None,
+        )
+
+        snapshot = state.status_snapshot(limit=10)
+
+        assert snapshot["summary"]["total"] == 1
+        assert snapshot["summary"]["success"] == 1
+        assert snapshot["summary"]["failed"] == 0
+        assert len(snapshot["latest_jobs"]) == 1
+        assert snapshot["latest_jobs"][0]["job_id"] == "success-job"
+        assert snapshot["latest_jobs"][0]["status"] == JobStatus.SUCCESS.value
+    finally:
+        state.close()
+
+
+def test_status_snapshot_ignores_transient_hidden_media_sources(tmp_path: Path):
+    cfg = AppConfig.from_dict({"paths": {"state_db": str(tmp_path / "state.db")}})
+    state = StateStore(cfg.paths.state_db)
+    hidden_source = tmp_path / ".movie.tmp.mp4"
+    try:
+        state.mark_job_started(
+            job_id="hidden-temp-job",
+            source_path=hidden_source,
+            target_path=tmp_path / "movie.mp4",
+            strategy="subtitle_only",
+            case_label="D_SUBTITLE_ONLY",
+            stream_fp="stream-fp",
+            metadata_fp="meta-fp",
+        )
+        state.mark_job_finished(
+            job_id="hidden-temp-job",
+            status=JobStatus.FAILED,
+            error_class="RuntimeError",
+            error_message="temporary file should be hidden from status",
+            report_path=None,
+        )
+
+        snapshot = state.status_snapshot(limit=10)
+
+        assert snapshot["summary"]["total"] == 0
+        assert snapshot["summary"]["failed"] == 0
+        assert snapshot["latest_jobs"] == []
+    finally:
+        state.close()

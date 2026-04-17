@@ -281,6 +281,19 @@ class FFprobeAnalyzer:
         return not media.container_names.isdisjoint(APPLE_CONTAINERS)
 
     @staticmethod
+    def mp4_container_needs_normalization(media: MediaInfo) -> tuple[bool, list[str]]:
+        if not FFprobeAnalyzer.is_container_apple_compatible(media):
+            return False, []
+
+        format_node = media.raw_probe.get("format", {}) or {}
+        tags = format_node.get("tags", {}) or {}
+        encoder = str(tags.get("encoder", "")).strip().lower()
+        if "mkvmerge" not in encoder:
+            return False, []
+
+        return True, ["MP4 container was muxed by mkvmerge; normalize via ffmpeg remux for Apple-native playback stability"]
+
+    @staticmethod
     def is_video_apple_compatible(media: MediaInfo, max_4k_fps: int) -> tuple[bool, list[str]]:
         reasons: list[str] = []
         video = media.primary_video
@@ -291,7 +304,7 @@ class FFprobeAnalyzer:
             reasons.append(f"Unsupported video codec: {video.codec_name}")
         if (video.codec_name or "") == "hevc" and (video.pix_fmt or "") not in {"yuv420p", "yuv420p10le", "p010le"}:
             reasons.append(f"Unsupported HEVC pixel format: {video.pix_fmt}")
-        if (video.codec_name or "") == "h264" and (video.pix_fmt or "") not in {"yuv420p"}:
+        if (video.codec_name or "") == "h264" and (video.pix_fmt or "") not in {"yuv420p", "yuvj420p"}:
             reasons.append(f"Unsupported H.264 pixel format: {video.pix_fmt}")
         if video.field_order and video.field_order not in {"progressive", "unknown"}:
             reasons.append(f"Interlaced video detected ({video.field_order}); transcode recommended")

@@ -308,6 +308,20 @@ class _RecordingRunner:
         return CommandResult(command=command, return_code=0, stdout="", stderr="")
 
 
+class _DoviImportFailureRunner(_RecordingRunner):
+    def run(self, command: list[str], cwd: Path | None = None):  # noqa: ARG002
+        self.commands.append(command)
+        if command[0] == "mock-dovi":
+            return CommandResult(
+                command=command,
+                return_code=0,
+                stdout="",
+                stderr="Error importing subtitle0.srt: subtitle track import failed",
+            )
+        Path(command[-1]).write_bytes(b"artifact")
+        return CommandResult(command=command, return_code=0, stdout="", stderr="")
+
+
 class _FakeDoviAnalyzer:
     def __init__(
         self,
@@ -379,6 +393,7 @@ class _FakeDoviPlanner:
         self.repaired_path = repaired_path
         self.workspace_dir = workspace_dir
         self.fallback_requested = False
+        self.import_failure_fallback_requested = False
 
     def preview_target_path(self, _source: Path, _source_root: Path | None) -> Path:
         return self.target_path
@@ -418,6 +433,112 @@ class _FakeDoviPlanner:
             [self.temp_path],
             self.repaired_path,
             [],
+        )
+
+    def build_dovi_subtitle_import_recovery_steps(self, _media, _decision, _plan):
+        self.import_failure_fallback_requested = True
+        subtitleless = self.temp_path.with_name(f"{self.temp_path.stem}.subtitleless-base{self.temp_path.suffix}")
+        return (
+            [
+                CommandStep(
+                    name="dovi_muxer_subtitleless_base",
+                    command=["mock-dovi-recovery", str(subtitleless)],
+                    expected_outputs=[subtitleless],
+                    cwd=self.workspace_dir,
+                ),
+                CommandStep(
+                    name="dovi_subtitle_repair",
+                    command=["mock-ffmpeg", str(self.repaired_path)],
+                    expected_outputs=[self.repaired_path],
+                    cwd=self.workspace_dir,
+                ),
+            ],
+            [subtitleless],
+            self.repaired_path,
+            [],
+        )
+
+
+class _CleanupAwareAnalyzer:
+    def __init__(
+        self,
+        source_path: Path,
+        temp_path: Path,
+        cleaned_path: Path,
+        source_media: MediaInfo,
+        temp_output_media: MediaInfo,
+        cleaned_output_media: MediaInfo,
+    ):
+        self.source_path = source_path
+        self.temp_path = temp_path
+        self.cleaned_path = cleaned_path
+        self.source_media = source_media
+        self.temp_output_media = temp_output_media
+        self.cleaned_output_media = cleaned_output_media
+
+    def analyze(self, path: Path):
+        if path == self.source_path:
+            return self.source_media, ["ffprobe", str(path)]
+        if path == self.temp_path:
+            return self.temp_output_media, ["ffprobe", str(path)]
+        if path == self.cleaned_path:
+            return self.cleaned_output_media, ["ffprobe", str(path)]
+        raise AssertionError(f"Unexpected analyze path: {path}")
+
+    def stream_fingerprint(self, _media: MediaInfo) -> str:
+        return "stream-fp"
+
+    def metadata_fingerprint(self, _media: MediaInfo) -> str:
+        return "meta-fp"
+
+
+class _FakeRemuxEngine:
+    def decide(self, _media: MediaInfo):
+        return (
+            Decision(
+                strategy=Strategy.REMUX_ONLY,
+                case_label=CaseLabel.B,
+                reasons=["Container conversion required; all streams compatible"],
+                expected_container="mp4",
+                expected_direct_play_safe=True,
+            ),
+            CompatibilityDetails(
+                container_ok=False,
+                video_ok=True,
+                audio_ok=True,
+                subtitle_ok=True,
+                dv_present=False,
+                dv_profile=None,
+                hdr10_present=False,
+                requires_container_change=True,
+                requires_audio_fix=False,
+                requires_subtitle_fix=False,
+                requires_video_transcode=False,
+                reasons=[],
+            ),
+        )
+
+
+class _FakeCleanupPlanner(_FakePlanner):
+    def __init__(self, source_path: Path, target_path: Path, temp_path: Path, cleaned_path: Path):
+        super().__init__(source_path, target_path, temp_path)
+        self.cleaned_path = cleaned_path
+        self.cleanup_requested = False
+
+    def build_mp4_cleanup_steps(self, _media, _decision, plan):
+        self.cleanup_requested = True
+        return (
+            [
+                CommandStep(
+                    name="final_mp4_cleanup",
+                    command=["mock-ffmpeg", str(self.cleaned_path)],
+                    expected_outputs=[self.cleaned_path],
+                    cwd=plan.temp_path.parent,
+                )
+            ],
+            [plan.temp_path],
+            self.cleaned_path,
+            ["Normalized final MP4 container via cleanup remux"],
         )
 
 
@@ -471,6 +592,58 @@ def test_pipeline_rebuilds_unreadable_hevc_mp4_via_stabilized_video(tmp_path: Pa
     assert any(command[-1].endswith(".video-stabilized.mp4") for command in runner.commands)
 
 
+def test_pipeline_runs_final_mp4_cleanup_for_plain_remux_outputs(tmp_path: Path):
+    source = tmp_path / "watch" / "movie.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    target = tmp_path / "optimized" / "movie.mp4"
+    target.parent.mkdir(parents=True)
+    temp = target.parent / ".movie.tmp.mp4"
+    cleaned = target.parent / ".movie.tmp.apple-clean.mp4"
+
+    cfg = AppConfig.from_dict(
+        {
+            "output": {
+                "mode": "keep_original",
+                "output_root": str(tmp_path / "optimized"),
+                "overwrite": True,
+            },
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+        }
+    )
+    state = StateStore(cfg.paths.state_db)
+    reporter = Reporter(cfg)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=reporter)
+
+    source_media = _media(source, "matroska,webm", codec_tag=None)
+    temp_output_media = _validated_output_media(temp)
+    cleaned_output_media = _validated_output_media(cleaned)
+    analyzer = _CleanupAwareAnalyzer(source, temp, cleaned, source_media, temp_output_media, cleaned_output_media)
+    planner = _FakeCleanupPlanner(source, target, temp, cleaned)
+    runner = _RecordingRunner()
+    processor.analyzer = analyzer
+    processor.engine = _FakeRemuxEngine()
+    processor.planner = planner
+    processor.runner = runner
+
+    try:
+        report = processor.process_path(source, source.parent, dry_run_override=False)
+    finally:
+        state.close()
+
+    assert report.status == "success"
+    assert target.exists()
+    assert planner.cleanup_requested is True
+    assert any(command[-1].endswith(".apple-clean.mp4") for command in runner.commands)
+    assert not temp.exists()
+    assert not cleaned.exists()
+
+
 def test_pipeline_repairs_dovi_subtitles_after_validation_mismatch(tmp_path: Path):
     source = tmp_path / "watch" / "movie-dv.mkv"
     source.parent.mkdir(parents=True)
@@ -521,4 +694,56 @@ def test_pipeline_repairs_dovi_subtitles_after_validation_mismatch(tmp_path: Pat
     assert target.exists()
     assert planner.fallback_requested is True
     assert analyzer.repair_analyze_calls == 1
+    assert any(command[-1].endswith(".subtitle-repaired.mp4") for command in runner.commands)
+
+
+def test_pipeline_recovers_when_dovi_muxer_cannot_import_text_subtitles(tmp_path: Path):
+    source = tmp_path / "watch" / "movie-dv.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    target = tmp_path / "optimized" / "movie-dv.mp4"
+    target.parent.mkdir(parents=True)
+    workspace = tmp_path / "tmp" / "movie-dv.dovi"
+    workspace.mkdir(parents=True)
+    temp = workspace / "movie-dv.tmp.mp4"
+    repaired = workspace / "movie-dv.tmp.subtitle-repaired.mp4"
+
+    cfg = AppConfig.from_dict(
+        {
+            "output": {
+                "mode": "keep_original",
+                "output_root": str(tmp_path / "optimized"),
+                "overwrite": True,
+            },
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+        }
+    )
+    state = StateStore(cfg.paths.state_db)
+    reporter = Reporter(cfg)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=reporter)
+
+    source_media = _dovi_source_media(source)
+    repaired_output_media = _dovi_output_media(repaired, subtitle_count=2)
+    analyzer = _FakeDoviAnalyzer(source, temp, repaired, source_media, repaired_output_media, repaired_output_media)
+    planner = _FakeDoviPlanner(source, target, temp, repaired, workspace)
+    runner = _DoviImportFailureRunner()
+    processor.analyzer = analyzer
+    processor.engine = _FakeDoviEngine()
+    processor.planner = planner
+    processor.runner = runner
+
+    try:
+        report = processor.process_path(source, source.parent, dry_run_override=False)
+    finally:
+        state.close()
+
+    assert report.status == "success"
+    assert target.exists()
+    assert planner.import_failure_fallback_requested is True
+    assert any(command[0] == "mock-dovi-recovery" for command in runner.commands)
     assert any(command[-1].endswith(".subtitle-repaired.mp4") for command in runner.commands)

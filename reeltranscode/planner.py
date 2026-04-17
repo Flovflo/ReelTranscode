@@ -125,10 +125,7 @@ class CommandPlanner:
 
         cmd.extend(["-map_metadata", "0"])
         if target_path.suffix.lower() == ".mp4":
-            movflags = "+write_colr"
-            if self.config.remux.faststart:
-                movflags = f"{movflags}+faststart"
-            cmd.extend(["-movflags", movflags])
+            cmd.extend(self._mp4_mux_args(media, compatibility))
 
         cmd.append(str(temp_path))
         steps.append(CommandStep(name="main_ffmpeg", command=cmd, expected_outputs=[temp_path], cwd=step_cwd))
@@ -173,6 +170,61 @@ class CommandPlanner:
             notes=notes,
         )
 
+    def build_mp4_cleanup_steps(
+        self,
+        media: MediaInfo,
+        decision: Decision,
+        plan: ExecutionPlan,
+    ) -> tuple[list[CommandStep], list[Path], Path | None, list[str]]:
+        if (
+            plan.temp_path is None
+            or plan.target_path is None
+            or plan.target_path.suffix.lower() != ".mp4"
+            or decision.use_dovi_muxer
+        ):
+            return [], [], None, []
+
+        ffmpeg = self.config.tooling.ffmpeg_bin
+        step_cwd = plan.temp_path.parent
+        cleaned_path = plan.temp_path.with_name(f"{plan.temp_path.stem}.apple-clean{plan.temp_path.suffix}")
+
+        cleanup_cmd = [
+            ffmpeg,
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(plan.temp_path),
+            "-map",
+            "0:v",
+            "-map",
+            "0:a?",
+            "-map",
+            "0:s?",
+        ]
+        if self.config.remux.keep_chapters:
+            cleanup_cmd.extend(["-map_chapters", "0"])
+        else:
+            cleanup_cmd.extend(["-map_chapters", "-1"])
+        cleanup_cmd.extend(["-map_metadata", "0", "-c", "copy"])
+
+        source_video = media.primary_video
+        if source_video is not None and (source_video.codec_name or "").lower() == "hevc":
+            cleanup_cmd.extend(["-tag:v", self.config.video.hevc_tag])
+
+        cleanup_cmd.extend(self._mp4_mux_args(media))
+        cleanup_cmd.append(str(cleaned_path))
+        steps = [
+            CommandStep(
+                name="final_mp4_cleanup",
+                command=cleanup_cmd,
+                expected_outputs=[cleaned_path],
+                cwd=step_cwd,
+            )
+        ]
+        notes = ["Normalized final MP4 container via ffmpeg copy remux for Apple-native playback stability"]
+        return steps, [plan.temp_path], cleaned_path, notes
+
     def build_hevc_mp4_stabilization_steps(
         self,
         media: MediaInfo,
@@ -194,9 +246,6 @@ class CommandPlanner:
 
         ffmpeg = self.config.tooling.ffmpeg_bin
         step_cwd = plan.temp_path.parent
-        movflags = "+write_colr"
-        if self.config.remux.faststart:
-            movflags = f"{movflags}+faststart"
 
         stabilized_ts_path = plan.temp_path.with_name(f"{plan.temp_path.stem}.video-stabilized.ts")
         stabilized_video_path = plan.temp_path.with_name(f"{plan.temp_path.stem}.video-stabilized.mp4")
@@ -228,7 +277,8 @@ class CommandPlanner:
             "0:v:0",
         ]
         stabilize_video_mp4_cmd.extend(self._video_args(media, decision, compatibility))
-        stabilize_video_mp4_cmd.extend(["-movflags", movflags, str(stabilized_video_path)])
+        stabilize_video_mp4_cmd.extend(self._mp4_mux_args(media, compatibility))
+        stabilize_video_mp4_cmd.append(str(stabilized_video_path))
 
         subtitle_args, _, _, _, _ = self._subtitle_args(
             media,
@@ -258,7 +308,9 @@ class CommandPlanner:
         rebuild_cmd.extend(self._video_args(media, decision, compatibility))
         rebuild_cmd.extend(subtitle_args)
         rebuild_cmd.extend(self._audio_args(media, decision, input_index=1, include_default_maps=True))
-        rebuild_cmd.extend(["-map_metadata", "1", "-movflags", movflags, str(plan.temp_path)])
+        rebuild_cmd.extend(["-map_metadata", "1"])
+        rebuild_cmd.extend(self._mp4_mux_args(media, compatibility))
+        rebuild_cmd.append(str(plan.temp_path))
 
         steps = [
             CommandStep(
@@ -333,10 +385,8 @@ class CommandPlanner:
             subtitle_merge_cmd.extend(["-map_chapters", "1"])
         else:
             subtitle_merge_cmd.extend(["-map_chapters", "-1"])
-        movflags = "+write_colr"
-        if self.config.remux.faststart:
-            movflags = f"{movflags}+faststart"
-        subtitle_merge_cmd.extend(["-movflags", movflags, str(repaired_path)])
+        subtitle_merge_cmd.extend(self._mp4_mux_args(media))
+        subtitle_merge_cmd.append(str(repaired_path))
 
         steps = [
             CommandStep(
@@ -373,6 +423,86 @@ class CommandPlanner:
             cleanup_paths.append(repaired_path)
 
         return steps, cleanup_paths, final_repaired_path, notes
+
+    def build_dovi_subtitle_import_recovery_steps(
+        self,
+        media: MediaInfo,
+        decision: Decision,
+        plan: ExecutionPlan,
+    ) -> tuple[list[CommandStep], list[Path], Path | None, list[str]]:
+        if (
+            plan.temp_path is None
+            or plan.workspace_dir is None
+            or plan.ocr_subtitle_tasks
+            or not decision.use_dovi_muxer
+            or not media.subtitle_streams
+        ):
+            return [], [], None, []
+
+        caps = self.tooling.resolve_dolby_vision_mux_capabilities()
+        if not caps.available or not caps.mp4muxer_bin:
+            return [], [], None, []
+
+        workspace_dir = plan.workspace_dir
+        base_temp_path = plan.temp_path.with_name(f"{plan.temp_path.stem}.subtitleless-base{plan.temp_path.suffix}")
+        cmd = [caps.dovi_muxer_bin, str(base_temp_path), "-i", str(media.path), "-ffmpeg", caps.ffmpeg_bin]
+        cleanup_paths: list[Path] = []
+        notes = ["Retried DoViMuxer base remux without embedded subtitles after subtitle import failure"]
+
+        mp4muxer_wrapper = self._build_mp4muxer_wrapper(media, caps.mp4muxer_bin, workspace_dir)
+        cleanup_paths.append(mp4muxer_wrapper)
+        if caps.mp4box_bin:
+            mp4box_wrapper = self._build_mp4box_wrapper(media, caps.mp4box_bin, workspace_dir)
+            if mp4box_wrapper is not None:
+                cmd.extend(["-mp4box", str(mp4box_wrapper)])
+                cleanup_paths.append(mp4box_wrapper)
+                notes.append("Trimmed overlong audio track(s) to source video duration on the subtitleless DV fallback path")
+            else:
+                cmd.extend(["-mp4box", caps.mp4box_bin])
+        if caps.mediainfo_bin:
+            cmd.extend(["-mediainfo", caps.mediainfo_bin])
+        cmd.extend(["-mp4muxer", str(mp4muxer_wrapper)])
+        if not self.config.remux.keep_chapters:
+            cmd.append("--nochap")
+
+        cmd.extend(["-map", "0:v:0"])
+        output_audio_index = 0
+        for source_audio_index, stream in enumerate(media.audio_streams):
+            cmd.extend(["-map", f"0:a:{source_audio_index}"])
+            if meta := self._dovi_meta_arg("a", output_audio_index, stream.language, stream.title):
+                cmd.extend(["-meta", meta])
+            if stream.disposition.default:
+                cmd.extend(["-default", f"a:{output_audio_index}"])
+            output_audio_index += 1
+        cmd.append("-y")
+
+        steps = [
+            CommandStep(
+                name="dovi_muxer_subtitleless_base",
+                command=cmd,
+                expected_outputs=[base_temp_path],
+                cwd=workspace_dir,
+            )
+        ]
+
+        repair_plan = ExecutionPlan(
+            source_path=plan.source_path,
+            target_path=plan.target_path,
+            temp_path=base_temp_path,
+            workspace_dir=workspace_dir,
+            strategy=plan.strategy,
+            case_label=plan.case_label,
+            steps=[],
+        )
+        repair_steps, repair_cleanup_paths, repaired_path, repair_notes = self.build_dovi_subtitle_repair_steps(
+            media,
+            decision,
+            repair_plan,
+        )
+        steps.extend(repair_steps)
+        cleanup_paths.extend(repair_cleanup_paths)
+        notes.extend(repair_notes)
+        return steps, cleanup_paths, repaired_path, notes
 
     def _build_dovi_muxer_plan(
         self,
@@ -494,10 +624,8 @@ class CommandPlanner:
                 subtitle_merge_cmd.extend(["-map_chapters", "1"])
             else:
                 subtitle_merge_cmd.extend(["-map_chapters", "-1"])
-            movflags = "+write_colr"
-            if self.config.remux.faststart:
-                movflags = f"{movflags}+faststart"
-            subtitle_merge_cmd.extend(["-movflags", movflags, str(temp_path)])
+            subtitle_merge_cmd.extend(self._mp4_mux_args(media))
+            subtitle_merge_cmd.append(str(temp_path))
             steps.append(
                 CommandStep(
                     name="dovi_subtitle_merge",
@@ -606,6 +734,22 @@ class CommandPlanner:
                 if source.color_space:
                     args.extend(["-colorspace", source.color_space])
 
+        return args
+
+    def _mp4_mux_args(
+        self,
+        media: MediaInfo,
+        compatibility: CompatibilityDetails | None = None,
+    ) -> list[str]:
+        args: list[str] = []
+        dv_present = compatibility.dv_present if compatibility is not None else FFprobeAnalyzer.detect_dolby_vision(media)[0]
+        if dv_present:
+            args.extend(["-strict", "unofficial"])
+
+        movflags = "+write_colr"
+        if self.config.remux.faststart:
+            movflags = f"{movflags}+faststart"
+        args.extend(["-movflags", movflags])
         return args
 
     def _audio_args(

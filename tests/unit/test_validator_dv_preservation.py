@@ -14,6 +14,7 @@ def _media(
     has_dv: bool,
     codec_tag: str | None,
     raw_mediainfo: dict | None = None,
+    raw_probe: dict | None = None,
 ) -> MediaInfo:
     side_data = []
     if has_dv:
@@ -63,7 +64,7 @@ def _media(
         bit_rate=20_000_000,
         size=1_000_000_000,
         streams=streams,
-        raw_probe={},
+        raw_probe=raw_probe or {},
         raw_mediainfo=raw_mediainfo or {},
     )
 
@@ -134,6 +135,36 @@ def test_validator_accepts_output_when_dolby_vision_is_preserved():
 
     assert result.ok is True
     assert any("Dolby Vision preserved via mediainfo" in note for note in result.notes)
+
+
+def test_validator_accepts_ambiguous_dv_8_1_report_when_hdr10_signaling_is_preserved():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(Path("/tmp/source.mkv"), "matroska,webm", has_dv=True, codec_tag=None)
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="hvc1",
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {
+                        "@type": "Video",
+                        "HDR_Format": "Dolby Vision / SMPTE ST 2086",
+                        "HDR_Format_Profile": "dvhe.08",
+                        "CodecID": "hvc1",
+                    },
+                ]
+            }
+        },
+    )
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Dolby Vision profile changed" in reason for reason in result.reasons)
 
 
 def test_validator_accepts_dvh1_tag_when_dolby_vision_is_preserved():
@@ -866,3 +897,223 @@ def test_validator_uses_source_preferred_video_duration_when_container_runs_long
 
     assert result.ok is True
     assert not any("Duration delta too high" in reason for reason in result.reasons)
+
+
+def test_validator_accepts_non_default_source_audio_that_runs_longer_than_video():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(
+        Path("/tmp/source.mkv"),
+        "matroska,webm",
+        has_dv=False,
+        codec_tag=None,
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {"@type": "Video", "StreamOrder": "0", "ID": "1", "Duration": "1711.126", "Delay": "0.000"},
+                    {"@type": "Audio", "StreamOrder": "1", "ID": "2", "Duration": "1714.144", "Delay": "0.000", "Language": "fr", "Default": "Yes"},
+                    {"@type": "Audio", "StreamOrder": "2", "ID": "3", "Duration": "1711.168", "Delay": "0.000", "Language": "en"},
+                ]
+            }
+        },
+    )
+    source.duration = 1714.144
+    source.streams[0].start_time = 0.0
+    source.streams[1].start_time = 0.0
+    source.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "duration": "1711.168000",
+                "start_time": "0.000000",
+                "disposition": {"default": 0},
+                "tags": {"language": "eng"},
+            }
+        )
+    )
+
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="hvc1",
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {"@type": "Video", "StreamOrder": "0", "ID": "1", "Duration": "1711.126", "Delay": "0.000", "CodecID": "hvc1"},
+                    {"@type": "Audio", "StreamOrder": "1", "ID": "2", "Duration": "1711.126", "Delay": "0.000", "Language": "fr", "Default": "Yes"},
+                    {"@type": "Audio", "StreamOrder": "2", "ID": "3", "Duration": "1711.168", "Delay": "0.000", "Language": "en"},
+                ]
+            }
+        },
+    )
+    output.duration = 1711.126
+    output.streams[0].start_time = 0.0
+    output.streams[1].start_time = 0.0
+    output.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "codec_tag_string": "ec-3",
+                "duration": "1711.168000",
+                "start_time": "0.000000",
+                "disposition": {"default": 0},
+                "tags": {"language": "eng"},
+            }
+        )
+    )
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Duration delta too high" in reason for reason in result.reasons)
+    assert not any("Output audio duration changed unexpectedly" in reason for reason in result.reasons)
+
+
+def test_validator_accepts_when_all_source_audio_tracks_are_padded_to_container_duration():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(
+        Path("/tmp/source.mkv"),
+        "matroska,webm",
+        has_dv=True,
+        codec_tag=None,
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {"@type": "Video", "StreamOrder": "0", "ID": "1", "Duration": "2814.604", "Delay": "0.000"},
+                    {"@type": "Audio", "StreamOrder": "1", "ID": "2", "Duration": "2928.032", "Delay": "0.000", "Language": "fr"},
+                    {"@type": "Audio", "StreamOrder": "2", "ID": "3", "Duration": "2927.712", "Delay": "0.000", "Language": "en"},
+                    {"@type": "Text", "StreamOrder": "3", "ID": "4", "Duration": "2791.538", "Language": "fr"},
+                ]
+            }
+        },
+    )
+    source.duration = 2928.032
+    source.streams[0].duration = 2814.604
+    source.streams[1].duration = 2928.032
+    source.streams[0].start_time = 0.0
+    source.streams[1].start_time = 0.0
+    source.streams[0].codec_name = "hevc"
+    source.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "duration": "2927.712000",
+                "start_time": "0.000000",
+                "disposition": {"default": 0},
+                "tags": {"language": "eng"},
+            }
+        )
+    )
+
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=True,
+        codec_tag="dvh1",
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {"@type": "Video", "StreamOrder": "0", "ID": "1", "Duration": "2814.620", "Delay": "0.000", "CodecID": "dvh1"},
+                    {"@type": "Audio", "StreamOrder": "1", "ID": "2", "Duration": "2814.620", "Delay": "0.000", "Language": "fr"},
+                    {"@type": "Audio", "StreamOrder": "2", "ID": "3", "Duration": "2814.620", "Delay": "0.000", "Language": "en"},
+                    {"@type": "Text", "StreamOrder": "3", "ID": "4", "Language": "fr", "Format": "Timed Text"},
+                ]
+            }
+        },
+    )
+    output.duration = 2814.620
+    output.streams[0].duration = 2814.620
+    output.streams[1].duration = 2814.620
+    output.streams[0].start_time = 0.0
+    output.streams[1].start_time = 0.0
+    output.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "codec_tag_string": "ec-3",
+                "duration": "2814.620000",
+                "start_time": "0.000000",
+                "disposition": {"default": 0},
+                "tags": {"language": "eng"},
+            }
+        )
+    )
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Duration delta too high" in reason for reason in result.reasons)
+    assert not any("Output audio duration changed unexpectedly" in reason for reason in result.reasons)
+
+
+def test_validator_accepts_output_matching_shorter_chapter_tail_timeline():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(
+        Path("/tmp/source.mkv"),
+        "matroska,webm",
+        has_dv=False,
+        codec_tag=None,
+        raw_probe={
+            "chapters": [
+                {"id": 0, "start_time": "0.000000", "end_time": "696.400000"},
+                {"id": 1, "start_time": "696.400000", "end_time": "1562.960000"},
+                {"id": 2, "start_time": "1562.960000", "end_time": "2303.160000"},
+                {"id": 3, "start_time": "2303.160000", "end_time": "3205.040000"},
+                {"id": 4, "start_time": "3205.040000", "end_time": "4029.920000"},
+                {"id": 5, "start_time": "4029.920000", "end_time": "4113.000000"},
+            ]
+        },
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {"@type": "Video", "StreamOrder": "0", "ID": "1", "Duration": "4124.760", "Delay": "0.000"},
+                    {"@type": "Audio", "StreamOrder": "1", "ID": "2", "Duration": "4124.769", "Delay": "0.000", "Language": "fr"},
+                    {"@type": "Audio", "StreamOrder": "2", "ID": "3", "Duration": "4124.769", "Delay": "0.000", "Language": "en"},
+                    {"@type": "Text", "StreamOrder": "3", "ID": "4", "Language": "fr"},
+                ]
+            }
+        },
+    )
+    source.duration = 4124.769
+
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="hvc1",
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {"@type": "Video", "StreamOrder": "0", "ID": "1", "Duration": "4113.050", "Delay": "0.000", "CodecID": "hvc1"},
+                    {"@type": "Audio", "StreamOrder": "1", "ID": "2", "Duration": "4113.060", "Delay": "0.000", "Language": "fr"},
+                    {"@type": "Audio", "StreamOrder": "2", "ID": "3", "Duration": "4113.020", "Delay": "0.000", "Language": "en"},
+                    {"@type": "Text", "StreamOrder": "3", "ID": "4", "Language": "fr", "Format": "Timed Text"},
+                ]
+            }
+        },
+    )
+    output.duration = 4113.061
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Duration delta too high" in reason for reason in result.reasons)
+    assert not any("Video duration changed unexpectedly" in reason for reason in result.reasons)
+    assert not any("Output audio duration changed unexpectedly" in reason for reason in result.reasons)

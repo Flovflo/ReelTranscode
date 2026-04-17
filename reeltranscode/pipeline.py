@@ -262,7 +262,30 @@ class PipelineProcessor:
                             f"Generated {len(plan.ocr_subtitle_tasks)} OCR subtitle track(s) for Apple-native MP4 output"
                         )
                     for step in plan.steps:
-                        self._run_step(step, path=path, size=size, decision=decision, plan=plan)
+                        try:
+                            self._run_step(step, path=path, size=size, decision=decision, plan=plan)
+                        except RuntimeError as exc:
+                            if not self._should_retry_dovi_subtitle_import_recovery(decision, plan, step, exc):
+                                raise
+                            (
+                                fallback_steps,
+                                fallback_cleanup_paths,
+                                repaired_path,
+                                fallback_notes,
+                            ) = self.planner.build_dovi_subtitle_import_recovery_steps(media, decision, plan)
+                            if not fallback_steps or repaired_path is None:
+                                raise
+                            validations.append(
+                                "DoViMuxer failed to mux text subtitles; rebuilding Dolby Vision base without subtitles"
+                            )
+                            validations.extend(fallback_notes)
+                            cleanup_paths.extend(fallback_cleanup_paths)
+                            ffmpeg_commands.extend(step.command for step in fallback_steps)
+                            for fallback_step in fallback_steps:
+                                self._run_step(fallback_step, path=path, size=size, decision=decision, plan=plan)
+                            plan.temp_path = repaired_path
+                            temp_path = repaired_path
+                            break
 
                     if plan.target_path and self.config.validation.run_post_ffprobe:
                         validation_path = plan.temp_path if plan.temp_path and plan.temp_path.exists() else plan.target_path
@@ -313,6 +336,36 @@ class PipelineProcessor:
                         if validation.ok:
                             if validation.notes:
                                 validations.extend(validation.notes)
+                            if self._should_run_final_mp4_cleanup(decision, plan):
+                                cleanup_builder = getattr(self.planner, "build_mp4_cleanup_steps", None)
+                                if cleanup_builder is not None:
+                                    cleanup_steps, cleanup_cleanup_paths, cleaned_path, cleanup_notes = cleanup_builder(
+                                        media,
+                                        decision,
+                                        plan,
+                                    )
+                                    if cleanup_steps and cleaned_path is not None:
+                                        validations.append(
+                                            "Running final MP4 cleanup remux for Apple-native playback stability"
+                                        )
+                                        validations.extend(cleanup_notes)
+                                        cleanup_paths.extend(cleanup_cleanup_paths)
+                                        ffmpeg_commands.extend(step.command for step in cleanup_steps)
+                                        temp_path = cleaned_path
+                                        for step in cleanup_steps:
+                                            self._run_step(step, path=path, size=size, decision=decision, plan=plan)
+                                        output_media, _ = self.analyzer.analyze(cleaned_path)
+                                        validation = self.validator.validate(media, output_media, decision, plan=plan)
+                                        if validation.ok:
+                                            plan.temp_path = cleaned_path
+                                            if validation.notes:
+                                                validations.extend(validation.notes)
+                                        else:
+                                            validations.extend(validation.reasons)
+                                            raise RuntimeError(
+                                                "Validation failed after final MP4 cleanup: "
+                                                + "; ".join(validation.reasons)
+                                            )
                             validations.append("Validation passed")
                         else:
                             validations.extend(validation.reasons)
@@ -464,6 +517,31 @@ class PipelineProcessor:
         if not decision.use_dovi_muxer or plan.temp_path is None or plan.workspace_dir is None or plan.ocr_subtitle_tasks:
             return False
         return any(reason.startswith("Subtitle track ") for reason in validation_reasons)
+
+    @staticmethod
+    def _should_retry_dovi_subtitle_import_recovery(decision, plan, step, exc: RuntimeError) -> bool:
+        if (
+            not decision.use_dovi_muxer
+            or plan.temp_path is None
+            or plan.workspace_dir is None
+            or plan.ocr_subtitle_tasks
+            or step.name != "dovi_muxer"
+        ):
+            return False
+        message = str(exc).lower()
+        return "error importing" in message and "subtitle" in message
+
+    def _should_run_final_mp4_cleanup(self, decision, plan) -> bool:
+        return (
+            self.config.validation.run_post_ffprobe
+            and decision.strategy == Strategy.REMUX_ONLY
+            and not decision.use_dovi_muxer
+            and plan.temp_path is not None
+            and plan.target_path is not None
+            and plan.workspace_dir is None
+            and not plan.ocr_subtitle_tasks
+            and plan.target_path.suffix.lower() == ".mp4"
+        )
 
     def _run_step(self, step, *, path: Path, size: int | None, decision, plan) -> None:
         if step.cwd is not None:

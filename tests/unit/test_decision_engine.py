@@ -5,7 +5,7 @@ from reeltranscode.decision_engine import DecisionEngine
 from reeltranscode.models import CaseLabel, MediaInfo, StreamInfo, Strategy
 
 
-def _media(path: str, format_name: str, streams: list[dict]) -> MediaInfo:
+def _media(path: str, format_name: str, streams: list[dict], raw_probe: dict | None = None) -> MediaInfo:
     return MediaInfo(
         path=Path(path),
         format_name=format_name,
@@ -13,7 +13,7 @@ def _media(path: str, format_name: str, streams: list[dict]) -> MediaInfo:
         bit_rate=20_000_000,
         size=15_000_000_000,
         streams=[StreamInfo.from_probe(s) for s in streams],
-        raw_probe={},
+        raw_probe=raw_probe or {},
     )
 
 
@@ -174,6 +174,58 @@ def test_mp4_hevc_hev1_requires_remux_for_hvc1():
     decision, _ = engine.decide(media)
     assert decision.case_label == CaseLabel.B
     assert decision.strategy.value == "remux_only"
+
+
+def test_mp4_mkvmerge_mux_requires_normalization():
+    cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4"}})
+    engine = DecisionEngine(cfg)
+    video = _video_hevc_main10()
+    video["codec_tag_string"] = "hvc1"
+    media = _media(
+        "movie.mp4",
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        [
+            video,
+            _audio(1, "eac3", channels=6, default=True),
+        ],
+        raw_probe={"format": {"tags": {"encoder": "mkvmerge v98.0 ('Chonks') 64-bit"}}},
+    )
+
+    decision, _ = engine.decide(media)
+    assert decision.case_label == CaseLabel.B
+    assert decision.strategy == Strategy.REMUX_ONLY
+    assert any("mkvmerge" in reason.lower() for reason in decision.reasons)
+
+
+def test_dv_mp4_mkvmerge_mux_stays_on_remux_path():
+    cfg = AppConfig.from_dict(
+        {
+            "remux": {"preferred_container": "mp4"},
+            "dolby_vision": {
+                "safe_profiles": ["8.1"],
+                "remux_dv_from_mkv_to_mp4_is_safe": False,
+                "fragile_fallback": "preserve_hdr10",
+            },
+        }
+    )
+    engine = DecisionEngine(cfg)
+    video = _video_hevc_main10(dv=True, hdr10=True)
+    video["codec_tag_string"] = "hvc1"
+    media = _media(
+        "movie-dv.mp4",
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        [
+            video,
+            _audio(1, "eac3", channels=6, default=True),
+        ],
+        raw_probe={"format": {"tags": {"encoder": "mkvmerge v98.0 ('Chonks') 64-bit"}}},
+    )
+
+    decision, _ = engine.decide(media)
+    assert decision.case_label == CaseLabel.B
+    assert decision.strategy == Strategy.REMUX_ONLY
+    assert decision.use_dovi_muxer is False
+    assert decision.dv_fallback_applied is False
 
 
 def test_dv_fragile_uses_dovi_muxer_when_toolchain_is_available(tmp_path: Path):

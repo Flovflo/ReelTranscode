@@ -229,6 +229,67 @@ def test_mp4_plan_drops_incompatible_image_subtitles_by_default():
     assert any("Dropped incompatible image subtitle" in note for note in plan.notes)
 
 
+def test_dv_mp4_normalization_plan_preserves_dv_metadata_in_ffmpeg_mux_steps(tmp_path: Path):
+    cfg = AppConfig.from_dict(
+        {
+            "remux": {"preferred_container": "mp4"},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+            "dolby_vision": {
+                "safe_profiles": ["8.1"],
+                "remux_dv_from_mkv_to_mp4_is_safe": False,
+                "fragile_fallback": "preserve_hdr10",
+            },
+        }
+    )
+    media_root = tmp_path / "watch" / "Shows"
+    media_root.mkdir(parents=True)
+    video = {
+        "index": 0,
+        "codec_type": "video",
+        "codec_name": "hevc",
+        "codec_tag_string": "hvc1",
+        "profile": "Main 10",
+        "pix_fmt": "yuv420p10le",
+        "width": 3840,
+        "height": 2160,
+        "avg_frame_rate": "24000/1001",
+        "color_primaries": "bt2020",
+        "color_transfer": "smpte2084",
+        "color_space": "bt2020nc",
+        "disposition": {"default": 1},
+        "side_data_list": [{"side_data_type": "DOVI configuration record", "dv_profile": "8.1"}],
+    }
+    audio = {
+        "index": 1,
+        "codec_type": "audio",
+        "codec_name": "eac3",
+        "channels": 6,
+        "channel_layout": "5.1",
+        "tags": {"language": "fra"},
+        "disposition": {"default": 1},
+    }
+    media = _media(
+        str(media_root / "Episode.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        [video, audio],
+        raw_probe={"format": {"tags": {"encoder": "mkvmerge v98.0 ('Chonks') 64-bit"}}, "streams": [video, audio]},
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    assert decision.case_label == CaseLabel.B
+    assert decision.use_dovi_muxer is False
+
+    planner = CommandPlanner(cfg)
+    plan = planner.build(media, decision, comp, media_root)
+    main_cmd = plan.steps[0].command
+    assert main_cmd[main_cmd.index("-strict") + 1] == "unofficial"
+
+    cleanup_steps, _, _, _ = planner.build_mp4_cleanup_steps(media, decision, plan)
+    cleanup_cmd = cleanup_steps[0].command
+    assert cleanup_cmd[cleanup_cmd.index("-strict") + 1] == "unofficial"
+
+
 def test_mp4_plan_can_ocr_image_subtitles_into_mov_text():
     cfg = AppConfig.from_dict(
         {
@@ -323,6 +384,58 @@ def test_video_transcode_plan_uses_videotoolbox():
 
     cmd = plan.steps[0].command
     assert "hevc_videotoolbox" in cmd
+
+
+def test_h264_yuvj420p_is_treated_as_copy_compatible_for_mp4_remux(tmp_path: Path):
+    cfg = AppConfig.from_dict(
+        {
+            "remux": {"preferred_container": "mp4"},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+        }
+    )
+    media_root = tmp_path / "media" / "Series"
+    media_root.mkdir(parents=True)
+    media = _media(
+        str(media_root / "episode.mkv"),
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "h264",
+                "profile": "High",
+                "pix_fmt": "yuvj420p",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "25/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "aac",
+                "channels": 2,
+                "channel_layout": "stereo",
+                "tags": {"language": "fre"},
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 2,
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "tags": {"language": "fre"},
+                "disposition": {"default": 0},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, media_root)
+
+    assert decision.strategy == Strategy.SUBTITLE_ONLY
+    cmd = plan.steps[0].command
+    assert cmd[cmd.index("-c:v") + 1] == "copy"
 
 
 def test_plan_drops_empty_image_subtitles_instead_of_scheduling_ocr(tmp_path: Path):

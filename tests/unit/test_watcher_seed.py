@@ -213,6 +213,35 @@ def test_seed_existing_files_skips_managed_output_and_temp_paths(tmp_path):
         state.close()
 
 
+def test_seed_existing_files_skips_hidden_transient_media(tmp_path):
+    root = tmp_path / "watch"
+    root.mkdir(parents=True)
+    hidden_temp = root / ".movie.tmp.mp4"
+    real_media = root / "movie.mkv"
+    hidden_temp.write_bytes(b"temp")
+    real_media.write_bytes(b"real")
+
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {
+                "folders": [str(root)],
+                "allowed_extensions": [".mkv", ".mp4"],
+            }
+        }
+    )
+    watcher, state = _make_watcher(cfg, tmp_path)
+    work_queue: queue.Queue = queue.Queue()
+
+    try:
+        queued = watcher._seed_existing_files(root, work_queue)  # noqa: SLF001 - tested behavior
+
+        assert queued == 1
+        item = work_queue.get_nowait()
+        assert item.path == real_media
+    finally:
+        state.close()
+
+
 def test_scanner_skips_managed_output_and_temp_paths(tmp_path):
     root = tmp_path / "watch"
     optimized = root / "optimized"
