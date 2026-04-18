@@ -110,6 +110,11 @@ class OutputValidator:
                         "Accepted shorter output duration because the source video timeline ends before "
                         "container-padded audio tails"
                     )
+                elif _source_has_audio_track_near_duration(source, output.duration, tolerance):
+                    notes.append(
+                        "Accepted output duration because the source already contained an audio track "
+                        "extending to the same timeline"
+                    )
                 else:
                     reasons.append(f"Duration delta too high: {delta:.2f}s")
 
@@ -223,8 +228,8 @@ class OutputValidator:
             tolerance=tolerance,
         )
 
-        source_fps = _frame_rate_to_float(source_video.avg_frame_rate or source_video.r_frame_rate)
-        output_fps = _frame_rate_to_float(output_video.avg_frame_rate or output_video.r_frame_rate)
+        source_fps = _preferred_video_frame_rate(source, source_video)
+        output_fps = _preferred_video_frame_rate(output, output_video)
         if source_fps is not None and output_fps is not None:
             fps_delta = abs(source_fps - output_fps)
             allowed_delta = max(0.05, source_fps * 0.005)
@@ -269,7 +274,7 @@ class OutputValidator:
 
         for audio_index, audio_stream in enumerate(output.audio_streams):
             source_audio = source.audio_streams[audio_index] if audio_index < len(source.audio_streams) else None
-            source_audio_duration = _accepted_source_audio_duration(
+            source_audio_durations = _source_audio_duration_candidates_for_track(
                 source,
                 source_video,
                 source_audio,
@@ -281,14 +286,14 @@ class OutputValidator:
             if source_audio_start is not None and source_video.start_time is not None:
                 source_offset = max(0.0, source_audio_start - source_video.start_time)
 
-            if source_audio_duration is not None and output_audio_duration is not None:
-                allowed_output_durations = [source_audio_duration]
+            if source_audio_durations and output_audio_duration is not None:
+                allowed_output_durations = list(source_audio_durations)
                 if source_offset is not None and source_offset > START_TIME_TOLERANCE_SECONDS:
-                    allowed_output_durations.append(source_audio_duration + source_offset)
+                    allowed_output_durations.extend(duration + source_offset for duration in source_audio_durations)
                 if padded_audio_timeline is not None:
                     allowed_output_durations.append(padded_audio_timeline)
                 if min(abs(output_audio_duration - duration) for duration in allowed_output_durations) > tolerance and not _matches_chapter_tail_timeline(
-                    source_duration=source_audio_duration,
+                    source_duration=min(source_audio_durations),
                     output_duration=output_audio_duration,
                     chapter_tail_duration=chapter_tail_duration,
                     tolerance=tolerance,
@@ -302,19 +307,7 @@ class OutputValidator:
             if output_audio_duration is None:
                 continue
 
-            source_audio_durations = [
-                duration
-                for candidate_index, track in enumerate(source.audio_streams)
-                if (
-                    duration := _accepted_source_audio_duration(
-                        source,
-                        source_video,
-                        track,
-                        fallback_index=candidate_index,
-                    )
-                )
-                is not None
-            ]
+            source_audio_durations = _source_audio_duration_candidates(source, source_video)
             if source_audio_durations:
                 if min(abs(output_audio_duration - duration) for duration in source_audio_durations) <= tolerance:
                     continue
@@ -527,6 +520,47 @@ def _accepted_source_audio_duration(
     return accepted_duration
 
 
+def _source_audio_duration_candidates_for_track(
+    media: MediaInfo,
+    source_video,
+    stream,
+    *,
+    fallback_index: int | None = None,
+) -> list[float]:
+    candidates: list[float] = []
+    accepted_duration = _accepted_source_audio_duration(
+        media,
+        source_video,
+        stream,
+        fallback_index=fallback_index,
+    )
+    raw_duration = _preferred_stream_duration(media, stream, "Audio", fallback_index=fallback_index)
+    for duration in (accepted_duration, raw_duration):
+        _append_unique_duration(candidates, duration)
+    return candidates
+
+
+def _source_audio_duration_candidates(media: MediaInfo, source_video) -> list[float]:
+    candidates: list[float] = []
+    for candidate_index, track in enumerate(media.audio_streams):
+        for duration in _source_audio_duration_candidates_for_track(
+            media,
+            source_video,
+            track,
+            fallback_index=candidate_index,
+        ):
+            _append_unique_duration(candidates, duration)
+    return candidates
+
+
+def _append_unique_duration(target: list[float], value: float | None, *, epsilon: float = 0.001) -> None:
+    if value is None:
+        return
+    if any(abs(existing - value) <= epsilon for existing in target):
+        return
+    target.append(value)
+
+
 def _looks_like_mp4_video_start_time_quirk(
     source: MediaInfo,
     output: MediaInfo,
@@ -699,6 +733,16 @@ def _frame_rate_to_float(value: str | None) -> float | None:
         return None
 
 
+def _preferred_video_frame_rate(media: MediaInfo, stream) -> float | None:
+    mediainfo_track = _match_mediainfo_track(media, stream, "Video")
+    mediainfo_frame_rate = _frame_rate_to_float(mediainfo_track.get("FrameRate")) if mediainfo_track else None
+    if mediainfo_frame_rate is not None:
+        return mediainfo_frame_rate
+    if stream is None:
+        return None
+    return _frame_rate_to_float(stream.avg_frame_rate or stream.r_frame_rate)
+
+
 def _expected_output_duration(source: MediaInfo, tolerance: float) -> float | None:
     source_video = source.primary_video
     source_video_duration = _preferred_stream_duration(source, source_video, "Video")
@@ -732,6 +776,16 @@ def _expected_output_duration(source: MediaInfo, tolerance: float) -> float | No
     if source_video_duration is not None:
         return source_video_duration
     return source.duration
+
+
+def _source_has_audio_track_near_duration(media: MediaInfo, duration: float, tolerance: float) -> bool:
+    for candidate_index, track in enumerate(media.audio_streams):
+        candidate_duration = _preferred_stream_duration(media, track, "Audio", fallback_index=candidate_index)
+        if candidate_duration is None:
+            continue
+        if abs(candidate_duration - duration) <= tolerance:
+            return True
+    return False
 
 
 def _matches_chapter_tail_timeline(

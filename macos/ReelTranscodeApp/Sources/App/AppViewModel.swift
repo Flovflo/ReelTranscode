@@ -51,6 +51,7 @@ final class AppViewModel: ObservableObject {
                     // Keep app usable even if tooling binaries are temporarily unavailable.
                 }
                 await refreshAll()
+                await autoStartWatchServiceIfNeeded()
             }
         } catch {
             lastError = error.localizedDescription
@@ -64,6 +65,7 @@ final class AppViewModel: ObservableObject {
         if lastError == nil && configValidationErrors.isEmpty {
             onboardingRequired = false
             await refreshAll(reportErrors: true)
+            await autoStartWatchServiceIfNeeded()
         }
     }
 
@@ -162,6 +164,21 @@ final class AppViewModel: ObservableObject {
         Task {
             await refreshLaunchdStatusAsync()
         }
+    }
+
+    private func autoStartWatchServiceIfNeeded() async {
+        guard !onboardingRequired else { return }
+        guard !isServiceRunning else { return }
+        guard FileManager.default.fileExists(atPath: AppPaths.configFileURL.path) else { return }
+
+        if let process = inAppWatchProcess, process.isRunning {
+            return
+        }
+
+        let matchingProcesses = (try? await findMatchingWatchProcesses()) ?? []
+        guard matchingProcesses.isEmpty else { return }
+
+        await performStartWatchService()
     }
 
     private func performStartWatchService() async {

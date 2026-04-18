@@ -1060,6 +1060,162 @@ def test_validator_accepts_when_all_source_audio_tracks_are_padded_to_container_
     assert not any("Output audio duration changed unexpectedly" in reason for reason in result.reasons)
 
 
+def test_validator_accepts_interlaced_hevc_with_original_50fps_and_preserved_long_audio_tail():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(
+        Path("/tmp/source.mkv"),
+        "matroska,webm",
+        has_dv=False,
+        codec_tag=None,
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {
+                        "@type": "Video",
+                        "StreamOrder": "0",
+                        "ID": "1",
+                        "Duration": "2910.345",
+                        "Delay": "0.000",
+                        "FrameRate": "25.000",
+                        "FrameRate_Original": "50.000",
+                        "ScanType": "Interlaced",
+                        "ScanOrder": "TFF",
+                    },
+                    {
+                        "@type": "Audio",
+                        "StreamOrder": "1",
+                        "ID": "2",
+                        "Duration": "2942.464",
+                        "Delay": "0.008",
+                        "Language": "fr",
+                    },
+                    {
+                        "@type": "Audio",
+                        "StreamOrder": "2",
+                        "ID": "3",
+                        "Duration": "2910.368",
+                        "Delay": "0.000",
+                        "Language": "en",
+                    },
+                ]
+            }
+        },
+    )
+    source.duration = 2942.472
+    source.streams[0].avg_frame_rate = "50/1"
+    source.streams[0].r_frame_rate = "50/1"
+    source.streams[0].start_time = 0.0
+    source.streams[1].codec_name = "ac3"
+    source.streams[1].duration = 2942.464
+    source.streams[1].start_time = 0.008
+    source.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "audio",
+                "codec_name": "ac3",
+                "duration": "2910.368000",
+                "start_time": "0.000000",
+                "disposition": {"default": 0},
+                "tags": {"language": "eng"},
+            }
+        )
+    )
+
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="hvc1",
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {
+                        "@type": "Video",
+                        "StreamOrder": "0",
+                        "ID": "1",
+                        "Duration": "2910.345",
+                        "Delay": "0.000",
+                        "FrameRate": "25.000",
+                        "CodecID": "hvc1",
+                    },
+                    {
+                        "@type": "Audio",
+                        "StreamOrder": "1",
+                        "ID": "2",
+                        "Duration": "2942.472",
+                        "Delay": "0.000",
+                        "Language": "fr",
+                    },
+                    {
+                        "@type": "Audio",
+                        "StreamOrder": "2",
+                        "ID": "3",
+                        "Duration": "2910.368",
+                        "Delay": "0.000",
+                        "Language": "en",
+                    },
+                    {
+                        "@type": "Audio",
+                        "StreamOrder": "3",
+                        "ID": "4",
+                        "Duration": "2942.472",
+                        "Delay": "0.000",
+                        "Language": "fr",
+                    },
+                ]
+            }
+        },
+    )
+    output.duration = 2942.472
+    output.streams[0].avg_frame_rate = "25/1"
+    output.streams[0].r_frame_rate = "25/1"
+    output.streams[0].duration = 2910.345
+    output.streams[0].start_time = 0.0
+    output.streams[1].codec_name = "ac3"
+    output.streams[1].duration = 2942.472
+    output.streams[1].start_time = 0.0
+    output.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "audio",
+                "codec_name": "ac3",
+                "codec_tag_string": "ac-3",
+                "duration": "2910.368000",
+                "start_time": "0.000000",
+                "disposition": {"default": 0},
+                "tags": {"language": "eng"},
+            }
+        )
+    )
+    output.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 3,
+                "codec_type": "audio",
+                "codec_name": "aac",
+                "codec_tag_string": "mp4a",
+                "duration": "2942.472000",
+                "start_time": "0.000000",
+                "disposition": {"default": 0},
+                "tags": {"language": "fre", "title": "AAC Stereo Fallback"},
+            }
+        )
+    )
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Duration delta too high" in reason for reason in result.reasons)
+    assert not any("Video frame rate changed unexpectedly" in reason for reason in result.reasons)
+    assert not any("Output audio duration changed unexpectedly" in reason for reason in result.reasons)
+    assert not any("Output audio/video duration mismatch" in reason for reason in result.reasons)
+
+
 def test_validator_accepts_output_matching_shorter_chapter_tail_timeline():
     cfg = AppConfig.from_dict({})
     validator = OutputValidator(cfg)
