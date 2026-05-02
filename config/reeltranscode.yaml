@@ -5,8 +5,11 @@ watch:
   folders:
     - /Volumes/Media/Movies
     - /Volumes/Media/TV
+  priority_folders:
+    - /Volumes/Media-Optimized
   recursive: true
-  allowed_extensions: [.mkv, .mp4, .mov, .m4v, .ts, .m2ts]
+  allowed_extensions: [.mkv, .mp4, .mov, .m4v, .ts, .m2ts, .avi]
+  priority_extensions: [.mkv, .mov, .m4v, .ts, .m2ts, .avi]
   stable_wait_seconds: 300
   stable_checks: 3
   poll_interval_seconds: 10
@@ -36,7 +39,7 @@ subtitles:
 dolby_vision:
   preserve_when_safe: true
   safe_profiles: ["8.1"]
-  remux_dv_from_mkv_to_mp4_is_safe: false
+  remux_dv_from_mkv_to_mp4_is_safe: true
   # preserve_hdr10 | force_sdr
   fragile_fallback: preserve_hdr10
 
@@ -44,6 +47,11 @@ video:
   preferred_codec: hevc
   fallback_codec: h264
   force_cfr: false
+  hardware_encoder: auto
+  encoder_threads: 1
+  videotoolbox_bitrate_multiplier: 1.0
+  videotoolbox_min_bitrate_kbps: 2500
+  videotoolbox_max_bitrate_kbps: 80000
   keyframe_interval_seconds: 2
   hevc_tag: hvc1
   max_4k_fps: 60
@@ -52,13 +60,17 @@ output:
   # keep_original | archive_original | replace_original
   mode: replace_original
   output_root: /Volumes/Media-Optimized
+  output_root_overrides:
+    /Volumes/Media-Optimized: /Volumes/Media-Optimized
   archive_root: /Volumes/Media-Archive
   overwrite: false
   delete_original_after_success: false
+  delete_original_after_success_roots:
+    - /Volumes/Media-Optimized
 
 concurrency:
-  max_workers: 2
-  io_nice_sleep_seconds: 0.0
+  max_workers: 1
+  io_nice_sleep_seconds: 0.25
 
 retry:
   max_attempts: 3

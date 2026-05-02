@@ -52,7 +52,10 @@ def test_watch_sigterm_does_not_retry_terminated_transcode(tmp_path):
 def _make_watch_repro(tmp_path: Path, *, retry_attempts: int) -> WatchRepro:
     watch_root = tmp_path / "watch"
     watch_root.mkdir()
-    (watch_root / "sample.mkv").write_bytes(b"placeholder")
+    sample = watch_root / "sample.mkv"
+    sample.write_bytes(b"placeholder")
+    old_timestamp = time.time() - 120
+    os.utime(sample, (old_timestamp, old_timestamp))
 
     fake_ffprobe = tmp_path / "fake_ffprobe.py"
     fake_ffprobe.write_text(_fake_ffprobe_script(), encoding="utf-8")

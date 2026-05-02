@@ -13,6 +13,7 @@ struct ConfigurationView: View {
                         Spacer()
                         Button("Remove") {
                             model.config.watchFolders.removeAll { $0 == folder }
+                            model.config.tempDirOverrides.removeValue(forKey: folder)
                         }
                     }
                 }
@@ -64,16 +65,49 @@ struct ConfigurationView: View {
             }
 
             Section("Temporary Workspace") {
-                Text("Temporary files are created next to the source media in .reeltranscode-tmp when possible. Use this fallback volume only when the source volume is unavailable or too small.")
+                Picker("Workspace Mode", selection: $model.config.tempWorkspaceStrategy) {
+                    ForEach(TempWorkspaceStrategy.allCases) { strategy in
+                        Text(strategy.title).tag(strategy)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(model.config.tempWorkspaceStrategy.summary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack {
-                    Text("Fallback dir")
+                    Text(model.config.tempWorkspaceStrategy == .configuredFirst ? "Scratch root" : "Fallback dir")
                         .frame(width: 110, alignment: .leading)
-                    TextField("Fallback temporary workspace", text: $model.config.tempDir)
+                    TextField("Temporary workspace root", text: $model.config.tempDir)
                     Button("Browse") {
                         if let picked = model.pickFolder() {
                             model.config.tempDir = picked
+                        }
+                    }
+                }
+                if !model.config.watchFolders.isEmpty {
+                    Text("Optional overrides let each watch folder use its own SSD scratch root while keeping one shared default for everyone else.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(model.config.watchFolders, id: \.self) { folder in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(folder)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            HStack {
+                                Text("Override")
+                                    .frame(width: 110, alignment: .leading)
+                                TextField("Use shared scratch root", text: tempOverrideBinding(for: folder))
+                                Button("Browse") {
+                                    if let picked = model.pickFolder() {
+                                        model.config.tempDirOverrides[folder] = picked
+                                    }
+                                }
+                                if model.config.tempDirOverrides[folder]?.isEmpty == false {
+                                    Button("Clear") {
+                                        model.config.tempDirOverrides.removeValue(forKey: folder)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -128,5 +162,19 @@ struct ConfigurationView: View {
             model.config.watchFolders.append(trimmed)
         }
         newWatchFolder = ""
+    }
+
+    private func tempOverrideBinding(for folder: String) -> Binding<String> {
+        Binding(
+            get: { model.config.tempDirOverrides[folder] ?? "" },
+            set: { newValue in
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    model.config.tempDirOverrides.removeValue(forKey: folder)
+                } else {
+                    model.config.tempDirOverrides[folder] = trimmed
+                }
+            }
+        )
     }
 }

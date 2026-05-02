@@ -3,13 +3,20 @@ from types import SimpleNamespace
 
 import pytest
 
+import reeltranscode.planner as planner_module
 from reeltranscode.config import AppConfig
 from reeltranscode.decision_engine import DecisionEngine
 from reeltranscode.models import CaseLabel, Decision, MediaInfo, StreamInfo, Strategy
 from reeltranscode.planner import CommandPlanner
 
 
-def _media(path: str, format_name: str, streams: list[dict], raw_probe: dict | None = None) -> MediaInfo:
+def _media(
+    path: str,
+    format_name: str,
+    streams: list[dict],
+    raw_probe: dict | None = None,
+    raw_mediainfo: dict | None = None,
+) -> MediaInfo:
     return MediaInfo(
         path=Path(path),
         format_name=format_name,
@@ -18,7 +25,16 @@ def _media(path: str, format_name: str, streams: list[dict], raw_probe: dict | N
         size=13_000_000_000,
         streams=[StreamInfo.from_probe(s) for s in streams],
         raw_probe=raw_probe or {"streams": streams},
+        raw_mediainfo=raw_mediainfo or {},
     )
+
+
+def _arg_pair(command: list[str], option: str) -> str:
+    return command[command.index(option) + 1]
+
+
+def _all_arg_values(command: list[str], option: str) -> list[str]:
+    return [command[index + 1] for index, value in enumerate(command[:-1]) if value == option]
 
 
 def test_plan_for_sample1_keeps_video_copy(tmp_path: Path):
@@ -128,6 +144,111 @@ def test_plan_prefers_source_local_temp_root_when_source_directory_exists(tmp_pa
     assert not any("Using alternate temporary workspace volume" in note for note in plan.notes)
 
 
+def test_plan_prefers_configured_temp_root_when_strategy_is_configured_first(tmp_path: Path):
+    media_root = tmp_path / "watch" / "Movies"
+    media_root.mkdir(parents=True)
+    configured_temp_root = tmp_path / "speedy-boy" / "tmp"
+    cfg = AppConfig.from_dict(
+        {
+            "remux": {"preferred_container": "mp4"},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {
+                "temp_dir": str(configured_temp_root),
+                "temp_dir_strategy": "configured_first",
+            },
+        }
+    )
+    media = _media(
+        str(media_root / "SpiderVerse.mkv"),
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "pix_fmt": "yuv420p10le",
+                "width": 3840,
+                "height": 1608,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "fra"},
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, media_root)
+
+    assert plan.temp_path is not None
+    assert plan.temp_path.parent == configured_temp_root.resolve()
+
+
+def test_plan_prefers_temp_override_for_matching_watch_root(tmp_path: Path):
+    movies_root = tmp_path / "watch" / "Movies"
+    series_root = tmp_path / "watch" / "Series"
+    movies_root.mkdir(parents=True)
+    series_root.mkdir(parents=True)
+    global_temp_root = tmp_path / "global-tmp"
+    speedy_series_root = tmp_path / "speedy-boy" / "series-tmp"
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {
+                "folders": [str(movies_root), str(series_root)],
+            },
+            "remux": {"preferred_container": "mp4"},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {
+                "temp_dir": str(global_temp_root),
+                "temp_dir_strategy": "configured_first",
+                "temp_dir_overrides": {
+                    str(series_root): str(speedy_series_root),
+                },
+            },
+        }
+    )
+    media = _media(
+        str(series_root / "SpiderVerse.mkv"),
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "pix_fmt": "yuv420p10le",
+                "width": 3840,
+                "height": 1608,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "fra"},
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, series_root)
+
+    assert plan.temp_path is not None
+    assert plan.temp_path.parent == speedy_series_root.resolve()
+
+
 def test_mp4_plan_preserves_text_subtitle_metadata_and_flags():
     cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4"}})
     media = _media(
@@ -177,12 +298,147 @@ def test_mp4_plan_preserves_text_subtitle_metadata_and_flags():
 
     cmd = plan.steps[0].command
     assert cmd[cmd.index("-c:s:0") + 1] == "mov_text"
-    assert cmd[cmd.index("-metadata:s:s:0") + 1] == "language=fre"
+    assert cmd[cmd.index("-metadata:s:s:0") + 1] == "language=fra"
     assert "title=VFF Forced" in cmd
     assert cmd[cmd.index("-disposition:s:0") + 1] == "default+forced"
     assert cmd[cmd.index("-c:s:1") + 1] == "mov_text"
     assert "title=SDH" in cmd
     assert "hearing_impaired+captions" in cmd
+
+
+def test_mp4_plan_writes_modern_iso_language_aliases():
+    cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4"}})
+    media = _media(
+        "/Volumes/Media/Movies/SpiderVerse.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "pix_fmt": "yuv420p10le",
+                "width": 3840,
+                "height": 1608,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "fre"},
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 2,
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "tags": {"language": "cze"},
+                "disposition": {"default": 0},
+            },
+            {
+                "index": 3,
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "tags": {"language": "chi"},
+                "disposition": {"default": 0},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
+
+    cmd = plan.steps[0].command
+    assert "language=fra" in cmd
+    assert "language=ces" in cmd
+    assert "language=zho" in cmd
+    assert "language=fre" not in cmd
+    assert "language=cze" not in cmd
+    assert "language=chi" not in cmd
+
+
+def test_mp4_plan_uses_mediainfo_subtitle_metadata_when_ffprobe_is_sparse():
+    cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4"}})
+    streams = [
+        {
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "hevc",
+            "profile": "Main 10",
+            "pix_fmt": "yuv420p10le",
+            "width": 3840,
+            "height": 1608,
+            "avg_frame_rate": "24/1",
+            "disposition": {"default": 1},
+        },
+        {
+            "index": 1,
+            "codec_type": "audio",
+            "codec_name": "eac3",
+            "channels": 6,
+            "channel_layout": "5.1",
+            "tags": {"language": "fra"},
+            "disposition": {"default": 1},
+        },
+        {
+            "index": 2,
+            "codec_type": "subtitle",
+            "codec_name": "subrip",
+            "tags": {"language": "fra"},
+            "disposition": {"default": 1},
+        },
+        {
+            "index": 3,
+            "codec_type": "subtitle",
+            "codec_name": "subrip",
+            "tags": {"language": "fra"},
+            "disposition": {"default": 0},
+        },
+    ]
+    media = _media(
+        "/Volumes/Media/Movies/Ballerina.mp4",
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        streams,
+        raw_probe={"streams": streams},
+    )
+    media.raw_mediainfo = {
+        "media": {
+            "track": [
+                {"@type": "General"},
+                {"@type": "Video", "StreamOrder": "0"},
+                {"@type": "Audio", "StreamOrder": "1"},
+                {
+                    "@type": "Text",
+                    "StreamOrder": "2",
+                    "Title": "FR Forced",
+                    "Language": "fr",
+                    "Default": "Yes",
+                    "Forced": "Yes",
+                },
+                {
+                    "@type": "Text",
+                    "StreamOrder": "3",
+                    "Title": "FR",
+                    "Language": "fr",
+                    "Default": "No",
+                    "Forced": "No",
+                },
+            ]
+        }
+    }
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
+
+    cmd = plan.steps[0].command
+    assert "title=FR Forced" in cmd
+    assert "title=FR" in cmd
+    assert cmd[cmd.index("-disposition:s:0") + 1] == "default+forced"
+    assert cmd[cmd.index("-disposition:s:1") + 1] == "0"
 
 
 def test_mp4_plan_drops_incompatible_image_subtitles_by_default():
@@ -290,6 +546,85 @@ def test_dv_mp4_normalization_plan_preserves_dv_metadata_in_ffmpeg_mux_steps(tmp
     assert cleanup_cmd[cleanup_cmd.index("-strict") + 1] == "unofficial"
 
 
+def test_mp4_cleanup_rewrites_stream_metadata_for_apple_clean_remux(tmp_path: Path):
+    cfg = AppConfig.from_dict(
+        {
+            "remux": {"preferred_container": "mp4"},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+        }
+    )
+    media_root = tmp_path / "media" / "Movies"
+    media_root.mkdir(parents=True)
+    video = {
+        "index": 0,
+        "codec_type": "video",
+        "codec_name": "hevc",
+        "codec_tag_string": "hvc1",
+        "profile": "Main 10",
+        "pix_fmt": "yuv420p10le",
+        "width": 3840,
+        "height": 1606,
+        "avg_frame_rate": "24/1",
+        "disposition": {"default": 1},
+    }
+    audio = {
+        "index": 1,
+        "codec_type": "audio",
+        "codec_name": "eac3",
+        "channels": 6,
+        "channel_layout": "5.1",
+        "tags": {"language": "fre", "title": "French DDP 5.1"},
+        "disposition": {"default": 1},
+    }
+    subtitle = {
+        "index": 2,
+        "codec_type": "subtitle",
+        "codec_name": "mov_text",
+        "tags": {"language": "fre"},
+        "disposition": {"default": 1},
+    }
+    media = _media(
+        str(media_root / "Movie.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        [video, audio, subtitle],
+        raw_probe={
+            "format": {"tags": {"encoder": "mkvmerge v98.0 ('Chonks') 64-bit"}},
+            "streams": [video, audio, subtitle],
+        },
+        raw_mediainfo={
+            "media": {
+                "track": [
+                    {"@type": "General"},
+                    {"@type": "Video"},
+                    {"@type": "Audio", "Language": "fr", "Title": "French DDP 5.1"},
+                    {
+                        "@type": "Text",
+                        "Language": "fr",
+                        "Title": "FR Forced",
+                        "Default": "Yes",
+                        "Forced": "Yes",
+                    },
+                ]
+            }
+        },
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    planner = CommandPlanner(cfg)
+    plan = planner.build(media, decision, comp, media_root)
+    cleanup_steps, _, _, _ = planner.build_mp4_cleanup_steps(media, decision, plan)
+
+    cleanup_cmd = cleanup_steps[0].command
+    assert "-c" in cleanup_cmd
+    assert cleanup_cmd[cleanup_cmd.index("-c") + 1] == "copy"
+    assert _arg_pair(cleanup_cmd, "-metadata:s:a:0") == "language=fra"
+    assert "title=French DDP 5.1" in _all_arg_values(cleanup_cmd, "-metadata:s:a:0")
+    assert _arg_pair(cleanup_cmd, "-metadata:s:s:0") == "language=fra"
+    assert "title=FR Forced" in _all_arg_values(cleanup_cmd, "-metadata:s:s:0")
+    assert _arg_pair(cleanup_cmd, "-disposition:s:0") == "default+forced"
+
+
 def test_mp4_plan_can_ocr_image_subtitles_into_mov_text():
     cfg = AppConfig.from_dict(
         {
@@ -349,8 +684,8 @@ def test_mp4_plan_can_ocr_image_subtitles_into_mov_text():
     assert any("OCR subtitle stream 0" in note for note in plan.notes)
 
 
-def test_video_transcode_plan_uses_videotoolbox():
-    cfg = AppConfig.from_dict({"video": {"preferred_codec": "hevc"}})
+def test_video_transcode_plan_uses_quality_software_encoder():
+    cfg = AppConfig.from_dict({"video": {"preferred_codec": "hevc", "hardware_encoder": "software"}})
     media = _media(
         "/Volumes/Media/Movies/movie_av1.mkv",
         "matroska,webm",
@@ -383,7 +718,219 @@ def test_video_transcode_plan_uses_videotoolbox():
     plan = planner.build(media, decision, comp, Path("/Volumes/Media/Movies"))
 
     cmd = plan.steps[0].command
-    assert "hevc_videotoolbox" in cmd
+    assert cmd[cmd.index("-c:v") + 1] == "libx265"
+    assert cmd[cmd.index("-crf") + 1] == "18"
+
+
+def test_video_transcode_auto_uses_videotoolbox_on_macos_when_available(monkeypatch):
+    monkeypatch.setattr(planner_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        planner_module,
+        "_ffmpeg_encoder_available",
+        lambda _ffmpeg_bin, encoder: encoder == "hevc_videotoolbox",
+    )
+    monkeypatch.setattr(
+        planner_module,
+        "_ffmpeg_encoder_option_available",
+        lambda _ffmpeg_bin, _encoder, _option: True,
+    )
+    monkeypatch.setattr(
+        planner_module,
+        "_ffmpeg_videotoolbox_session_available",
+        lambda _ffmpeg_bin, encoder: encoder == "hevc_videotoolbox",
+    )
+    cfg = AppConfig.from_dict({"video": {"preferred_codec": "hevc", "hardware_encoder": "auto"}})
+    media = _media(
+        "/Volumes/Media/Movies/movie_av1.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "av1",
+                "pix_fmt": "yuv420p10le",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "eng"},
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
+
+    cmd = plan.steps[0].command
+    assert cmd[cmd.index("-c:v") + 1] == "hevc_videotoolbox"
+    assert cmd[cmd.index("-allow_sw") + 1] == "0"
+    assert cmd[cmd.index("-power_efficient") + 1] == "1"
+    assert cmd[cmd.index("-spatial_aq") + 1] == "1"
+    assert cmd[cmd.index("-b:v") + 1] == "22000k"
+    assert cmd[cmd.index("-tag:v") + 1] == "hvc1"
+    assert cmd[cmd.index("-profile:v") + 1] == "main10"
+    assert cmd[cmd.index("-pix_fmt") + 1] == "p010le"
+    assert "-crf" not in cmd
+
+
+def test_video_transcode_auto_falls_back_to_software_off_macos(monkeypatch):
+    monkeypatch.setattr(planner_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(planner_module, "_ffmpeg_encoder_available", lambda _ffmpeg_bin, _encoder: True)
+    cfg = AppConfig.from_dict({"video": {"preferred_codec": "hevc", "hardware_encoder": "auto"}})
+    media = _media(
+        "/Volumes/Media/Movies/movie_av1.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "av1",
+                "pix_fmt": "yuv420p",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "eng"},
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
+
+    cmd = plan.steps[0].command
+    assert cmd[cmd.index("-c:v") + 1] == "libx265"
+    assert "hevc_videotoolbox" not in cmd
+
+
+def test_video_transcode_auto_uses_h264_videotoolbox_when_hevc_session_is_unavailable(monkeypatch):
+    monkeypatch.setattr(planner_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        planner_module,
+        "_ffmpeg_encoder_available",
+        lambda _ffmpeg_bin, encoder: encoder in {"hevc_videotoolbox", "h264_videotoolbox"},
+    )
+    monkeypatch.setattr(
+        planner_module,
+        "_ffmpeg_encoder_option_available",
+        lambda _ffmpeg_bin, _encoder, _option: True,
+    )
+    monkeypatch.setattr(
+        planner_module,
+        "_ffmpeg_videotoolbox_session_available",
+        lambda _ffmpeg_bin, encoder: encoder == "h264_videotoolbox",
+    )
+    cfg = AppConfig.from_dict(
+        {
+            "video": {
+                "preferred_codec": "hevc",
+                "fallback_codec": "h264",
+                "hardware_encoder": "auto",
+            }
+        }
+    )
+    media = _media(
+        "/Volumes/Media/Movies/movie_av1.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "av1",
+                "pix_fmt": "yuv420p",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "24/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "eng"},
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
+
+    cmd = plan.steps[0].command
+    assert cmd[cmd.index("-c:v") + 1] == "h264_videotoolbox"
+    assert cmd[cmd.index("-allow_sw") + 1] == "0"
+    assert "-tag:v" not in cmd
+    assert "-crf" not in cmd
+
+
+def test_video_transcode_keeps_hevc_software_for_hdr_when_hevc_videotoolbox_is_unavailable(monkeypatch):
+    monkeypatch.setattr(planner_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        planner_module,
+        "_ffmpeg_encoder_available",
+        lambda _ffmpeg_bin, encoder: encoder in {"hevc_videotoolbox", "h264_videotoolbox"},
+    )
+    monkeypatch.setattr(
+        planner_module,
+        "_ffmpeg_videotoolbox_session_available",
+        lambda _ffmpeg_bin, encoder: encoder == "h264_videotoolbox",
+    )
+    cfg = AppConfig.from_dict({"video": {"preferred_codec": "hevc", "hardware_encoder": "auto"}})
+    media = _media(
+        "/Volumes/Media/Movies/hdr_av1_source.mkv",
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "av1",
+                "pix_fmt": "yuv420p",
+                "width": 3840,
+                "height": 2160,
+                "avg_frame_rate": "24/1",
+                "color_primaries": "bt2020",
+                "color_transfer": "smpte2084",
+                "color_space": "bt2020nc",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "eac3",
+                "channels": 6,
+                "channel_layout": "5.1",
+                "tags": {"language": "eng"},
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, Path("/Volumes/Media/Movies"))
+
+    cmd = plan.steps[0].command
+    assert cmd[cmd.index("-c:v") + 1] == "libx265"
+    assert cmd[cmd.index("-profile:v") + 1] == "main10"
+    assert cmd[cmd.index("-pix_fmt") + 1] == "p010le"
+    assert "h264_videotoolbox" not in cmd
 
 
 def test_h264_yuvj420p_is_treated_as_copy_compatible_for_mp4_remux(tmp_path: Path):
@@ -436,6 +983,59 @@ def test_h264_yuvj420p_is_treated_as_copy_compatible_for_mp4_remux(tmp_path: Pat
     assert decision.strategy == Strategy.SUBTITLE_ONLY
     cmd = plan.steps[0].command
     assert cmd[cmd.index("-c:v") + 1] == "copy"
+
+
+def test_full_pipeline_preserves_compatible_video_by_copying(tmp_path: Path):
+    cfg = AppConfig.from_dict(
+        {
+            "remux": {"preferred_container": "mp4"},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+        }
+    )
+    media_root = tmp_path / "media" / "Series"
+    media_root.mkdir(parents=True)
+    media = _media(
+        str(media_root / "episode.mkv"),
+        "matroska,webm",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "h264",
+                "profile": "High",
+                "pix_fmt": "yuv420p",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "25/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "dts",
+                "channels": 2,
+                "channel_layout": "stereo",
+                "tags": {"language": "fra"},
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 2,
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "tags": {"language": "fra"},
+                "disposition": {"default": 0},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, media_root)
+
+    assert decision.strategy == Strategy.FULL_PIPELINE
+    cmd = plan.steps[0].command
+    assert cmd[cmd.index("-c:v") + 1] == "copy"
+    assert "hevc_videotoolbox" not in cmd
 
 
 def test_plan_drops_empty_image_subtitles_instead_of_scheduling_ocr(tmp_path: Path):
@@ -539,6 +1139,190 @@ def test_hdr_transcode_forces_hevc_main10_pipeline():
     assert cmd[cmd.index("-color_primaries") + 1] == "bt2020"
     assert cmd[cmd.index("-color_trc") + 1] == "smpte2084"
     assert cmd[cmd.index("-colorspace") + 1] == "bt2020nc"
+
+
+def test_video_transcode_preserves_constant_source_frame_rate(tmp_path: Path):
+    cfg = AppConfig.from_dict(
+        {
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+        }
+    )
+    media_root = tmp_path / "media" / "Series"
+    media_root.mkdir(parents=True)
+    media = _media(
+        str(media_root / "episode.avi"),
+        "avi",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "mpeg4",
+                "pix_fmt": "yuv420p",
+                "width": 624,
+                "height": 352,
+                "avg_frame_rate": "25/1",
+                "r_frame_rate": "25/1",
+                "field_order": "progressive",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "mp3",
+                "channels": 2,
+                "channel_layout": "stereo",
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, media_root)
+
+    cmd = plan.steps[0].command
+    assert decision.strategy == Strategy.FULL_PIPELINE
+    assert cmd[cmd.index("-fps_mode") + 1] == "cfr"
+    assert cmd[cmd.index("-r:v") + 1] == "25/1"
+    assert cmd[cmd.index("-g") + 1] == "50"
+
+
+def test_video_transcode_preserves_legacy_avi_frame_rate_when_probe_rates_disagree(tmp_path: Path):
+    cfg = AppConfig.from_dict(
+        {
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+        }
+    )
+    media_root = tmp_path / "media" / "Series"
+    media_root.mkdir(parents=True)
+    media = _media(
+        str(media_root / "episode.avi"),
+        "avi",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "mpeg4",
+                "pix_fmt": "yuv420p",
+                "width": 624,
+                "height": 352,
+                "avg_frame_rate": "25/1",
+                "r_frame_rate": "24000/1001",
+                "time_base": "1/25",
+                "duration": "2469.120000",
+                "nb_frames": "61728",
+                "field_order": "progressive",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "mp3",
+                "channels": 2,
+                "channel_layout": "stereo",
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, media_root)
+
+    cmd = plan.steps[0].command
+    assert decision.strategy == Strategy.FULL_PIPELINE
+    assert cmd[cmd.index("-fps_mode") + 1] == "cfr"
+    assert cmd[cmd.index("-r:v") + 1] == "25/1"
+    assert cmd[cmd.index("-g") + 1] == "50"
+
+
+def test_video_transcode_does_not_force_cfr_for_vfr_source(tmp_path: Path):
+    cfg = AppConfig.from_dict(
+        {
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+        }
+    )
+    media_root = tmp_path / "media" / "Series"
+    media_root.mkdir(parents=True)
+    media = _media(
+        str(media_root / "episode.avi"),
+        "avi",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "mpeg4",
+                "pix_fmt": "yuv420p",
+                "width": 624,
+                "height": 352,
+                "avg_frame_rate": "24000/1001",
+                "r_frame_rate": "30/1",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "mp3",
+                "channels": 2,
+                "channel_layout": "stereo",
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, media_root)
+
+    cmd = plan.steps[0].command
+    assert decision.strategy == Strategy.FULL_PIPELINE
+    assert "-fps_mode" not in cmd
+    assert "-r:v" not in cmd
+
+
+def test_video_transcode_deinterlaces_interlaced_source(tmp_path: Path):
+    cfg = AppConfig.from_dict(
+        {
+            "video": {"hardware_encoder": "software"},
+            "output": {"output_root": str(tmp_path / "optimized")},
+            "paths": {"temp_dir": str(tmp_path / "tmp")},
+        }
+    )
+    media_root = tmp_path / "media" / "Series"
+    media_root.mkdir(parents=True)
+    media = _media(
+        str(media_root / "episode.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "h264",
+                "pix_fmt": "yuv420p",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "25/1",
+                "r_frame_rate": "50/1",
+                "field_order": "tt",
+                "disposition": {"default": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "aac",
+                "channels": 2,
+                "channel_layout": "stereo",
+                "disposition": {"default": 1},
+            },
+        ],
+    )
+
+    decision, comp = DecisionEngine(cfg).decide(media)
+    plan = CommandPlanner(cfg).build(media, decision, comp, media_root)
+
+    cmd = plan.steps[0].command
+    assert decision.strategy == Strategy.VIDEO_ONLY
+    assert cmd[cmd.index("-vf") + 1] == "bwdif=mode=send_frame:parity=auto:deint=all,setfield=mode=prog"
 
 
 def test_mp4_plan_adds_aac_stereo_fallback_when_missing():

@@ -99,8 +99,34 @@ enum OutputBehavior: String, CaseIterable, Identifiable, Equatable, Sendable {
     }
 }
 
+enum TempWorkspaceStrategy: String, CaseIterable, Identifiable, Equatable, Sendable {
+    case sourceFirst = "source_first"
+    case configuredFirst = "configured_first"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .sourceFirst:
+            return "Near Source"
+        case .configuredFirst:
+            return "Dedicated Scratch"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .sourceFirst:
+            return "Prefer a .reeltranscode-tmp folder next to the source media, then fall back to the configured scratch root if space is tight."
+        case .configuredFirst:
+            return "Prefer the configured scratch root first, then fall back to the source volume only when needed."
+        }
+    }
+}
+
 struct ConfigDocument {
     var watchFolders: [String] = []
+    var priorityFolders: [String] = []
     var outputBehavior: OutputBehavior = .keepOriginals
     var outputRoot: String = "/Volumes/Media-Optimized"
     var archiveRoot: String = "/Volumes/Media-Archive"
@@ -108,23 +134,33 @@ struct ConfigDocument {
     var reportsDir: String = AppPaths.appSupportDirectory.appendingPathComponent("reports").path
     var csvSummary: String = AppPaths.appSupportDirectory.appendingPathComponent("reports/summary.csv").path
     var tempDir: String = AppPaths.appSupportDirectory.appendingPathComponent("tmp").path
+    var tempWorkspaceStrategy: TempWorkspaceStrategy = .sourceFirst
+    var tempDirOverrides: [String: String] = [:]
     var ffmpegBin: String = AppPaths.runtimeDirectory.appendingPathComponent("bin/ffmpeg").path
     var ffprobeBin: String = AppPaths.runtimeDirectory.appendingPathComponent("bin/ffprobe").path
     var doviMuxerBin: String = ""
     var mp4boxBin: String = ""
     var mediainfoBin: String = ""
     var mp4muxerBin: String = ""
-    var profile: PerformanceProfile = .balanced
-    var maxWorkers: Int = 2
+    var profile: PerformanceProfile = .lowImpact
+    var maxWorkers: Int = 1
+    var hardwareEncoder: String = "auto"
+    var encoderThreads: Int = 1
+    var videotoolboxBitrateMultiplier: Double = 1.0
+    var videotoolboxMinBitrateKbps: Int = 2500
+    var videotoolboxMaxBitrateKbps: Int = 80000
 
     mutating func apply(_ profile: PerformanceProfile) {
         self.profile = profile
         self.maxWorkers = max(1, profile.appliedConcurrency().maxWorkers)
+        self.encoderThreads = profile == .lowImpact ? 1 : 0
     }
 
     func toYAML() -> String {
         let concurrency = profile.appliedConcurrency()
         let retry = profile.appliedRetry()
+        let normalizedWatchFolders = normalizedWatchFolders()
+        let normalizedPriorityFolders = normalizedPriorityFolders()
         var tooling: [String: Any] = [
             "ffmpeg_bin": ffmpegBin,
             "ffprobe_bin": ffprobeBin,
@@ -142,16 +178,59 @@ struct ConfigDocument {
             tooling["mp4muxer_bin"] = mp4muxerBin
         }
 
+        var pathsPayload: [String: Any] = [
+            "state_db": stateDB,
+            "reports_dir": reportsDir,
+            "csv_summary": csvSummary,
+            "temp_dir": tempDir,
+            "temp_dir_strategy": tempWorkspaceStrategy.rawValue,
+        ]
+        let tempDirOverrides = normalizedTempDirOverrides(
+            for: normalizedWatchFolders + normalizedPriorityFolders
+        )
+        if !tempDirOverrides.isEmpty {
+            pathsPayload["temp_dir_overrides"] = tempDirOverrides
+        }
+
+        var outputPayload: [String: Any] = [
+            "mode": outputBehavior.yamlMode,
+            "output_root": outputRoot,
+            "archive_root": archiveRoot,
+            "overwrite": false,
+            "delete_original_after_success": outputBehavior.deleteOriginalAfterSuccess,
+        ]
+        let outputRootOverrides = Dictionary(uniqueKeysWithValues: normalizedPriorityFolders.map { ($0, $0) })
+        if !outputRootOverrides.isEmpty {
+            outputPayload["output_root_overrides"] = outputRootOverrides
+        }
+        let deleteOriginalRoots = normalizedPriorityFolders + (
+            outputBehavior.deleteOriginalAfterSuccess ? normalizedWatchFolders : []
+        )
+        if !deleteOriginalRoots.isEmpty {
+            outputPayload["delete_original_after_success_roots"] = deleteOriginalRoots
+        }
+
+        var watchPayload: [String: Any] = [
+            "folders": normalizedWatchFolders,
+            "recursive": true,
+            "use_filesystem_events": false,
+            "allowed_extensions": [".mkv", ".mp4", ".mov", ".m4v", ".ts", ".m2ts", ".avi"],
+            "priority_extensions": [".mkv", ".mov", ".m4v", ".ts", ".m2ts", ".avi"],
+            "stable_wait_seconds": 300,
+            "stable_checks": 3,
+            "poll_interval_seconds": 10,
+            "rescan_interval_seconds": 300,
+        ]
+        if !normalizedPriorityFolders.isEmpty {
+            watchPayload["priority_folders"] = normalizedPriorityFolders
+        }
+
+        let vtMinBitrate = max(1, videotoolboxMinBitrateKbps)
+        let vtMaxBitrate = max(vtMinBitrate, videotoolboxMaxBitrateKbps)
+
         let payload: [String: Any] = [
             "dry_run": false,
-            "watch": [
-                "folders": normalizedWatchFolders(),
-                "recursive": true,
-                "allowed_extensions": [".mkv", ".mp4", ".mov", ".m4v", ".ts", ".m2ts"],
-                "stable_wait_seconds": 300,
-                "stable_checks": 3,
-                "poll_interval_seconds": 10,
-            ],
+            "watch": watchPayload,
             "remux": [
                 "preferred_container": "mp4",
                 "faststart": true,
@@ -178,24 +257,23 @@ struct ConfigDocument {
             "dolby_vision": [
                 "preserve_when_safe": true,
                 "safe_profiles": ["8.1"],
-                "remux_dv_from_mkv_to_mp4_is_safe": false,
+                "remux_dv_from_mkv_to_mp4_is_safe": true,
                 "fragile_fallback": "preserve_hdr10",
             ],
             "video": [
                 "preferred_codec": "hevc",
                 "fallback_codec": "h264",
                 "force_cfr": false,
+                "hardware_encoder": normalizedHardwareEncoder(),
+                "encoder_threads": max(0, encoderThreads),
+                "videotoolbox_bitrate_multiplier": max(0.1, videotoolboxBitrateMultiplier),
+                "videotoolbox_min_bitrate_kbps": vtMinBitrate,
+                "videotoolbox_max_bitrate_kbps": vtMaxBitrate,
                 "keyframe_interval_seconds": 2,
                 "hevc_tag": "hvc1",
                 "max_4k_fps": 60,
             ],
-            "output": [
-                "mode": outputBehavior.yamlMode,
-                "output_root": outputRoot,
-                "archive_root": archiveRoot,
-                "overwrite": false,
-                "delete_original_after_success": outputBehavior.deleteOriginalAfterSuccess,
-            ],
+            "output": outputPayload,
             "concurrency": [
                 "max_workers": max(1, maxWorkers),
                 "io_nice_sleep_seconds": concurrency.ioNiceSleep,
@@ -205,12 +283,7 @@ struct ConfigDocument {
                 "backoff_initial_seconds": retry.initialBackoff,
                 "backoff_max_seconds": retry.maxBackoff,
             ],
-            "paths": [
-                "state_db": stateDB,
-                "reports_dir": reportsDir,
-                "csv_summary": csvSummary,
-                "temp_dir": tempDir,
-            ],
+            "paths": pathsPayload,
             "tooling": tooling,
             "validation": [
                 "verify_duration_tolerance_seconds": 2.0,
@@ -240,6 +313,40 @@ struct ConfigDocument {
         watchFolders.isEmpty ? ["/Volumes/Media"] : watchFolders
     }
 
+    private func normalizedPriorityFolders() -> [String] {
+        let explicit = priorityFolders
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !explicit.isEmpty {
+            return explicit
+        }
+        return outputBehavior.usesSeparateOutputRoot ? [outputRoot] : []
+    }
+
+    private func normalizedHardwareEncoder() -> String {
+        switch hardwareEncoder.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "software", "videotoolbox":
+            return hardwareEncoder.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        default:
+            return "auto"
+        }
+    }
+
+    private func normalizedTempDirOverrides(for normalizedProcessFolders: [String]) -> [String: String] {
+        let allowedRoots = Set(
+            normalizedProcessFolders.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        )
+
+        return tempDirOverrides.reduce(into: [:]) { result, entry in
+            let sourceRoot = entry.key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard allowedRoots.contains(sourceRoot) else { return }
+            guard let tempRoot = normalizedOptionalPath(entry.value) else { return }
+            result[sourceRoot] = tempRoot
+        }
+    }
+
     private func normalizedOptionalPath(_ rawValue: String) -> String? {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -251,6 +358,10 @@ struct ConfigDocument {
         if let watch = config["watch"]?.objectValue,
            let folders = watch["folders"]?.arrayValue {
             doc.watchFolders = folders.compactMap { $0.stringValue }
+        }
+        if let watch = config["watch"]?.objectValue,
+           let priorityFolders = watch["priority_folders"]?.arrayValue {
+            doc.priorityFolders = priorityFolders.compactMap { $0.stringValue }
         }
 
         if let output = config["output"]?.objectValue {
@@ -269,6 +380,16 @@ struct ConfigDocument {
             doc.reportsDir = paths["reports_dir"]?.stringValue ?? doc.reportsDir
             doc.csvSummary = paths["csv_summary"]?.stringValue ?? doc.csvSummary
             doc.tempDir = paths["temp_dir"]?.stringValue ?? doc.tempDir
+            if let rawStrategy = paths["temp_dir_strategy"]?.stringValue,
+               let strategy = TempWorkspaceStrategy(rawValue: rawStrategy) {
+                doc.tempWorkspaceStrategy = strategy
+            }
+            if let overrides = paths["temp_dir_overrides"]?.objectValue {
+                doc.tempDirOverrides = overrides.reduce(into: [:]) { result, entry in
+                    guard let value = entry.value.stringValue else { return }
+                    result[entry.key] = value
+                }
+            }
         }
 
         if let tooling = config["tooling"]?.objectValue {
@@ -278,6 +399,25 @@ struct ConfigDocument {
             doc.mp4boxBin = tooling["mp4box_bin"]?.stringValue ?? doc.mp4boxBin
             doc.mediainfoBin = tooling["mediainfo_bin"]?.stringValue ?? doc.mediainfoBin
             doc.mp4muxerBin = tooling["mp4muxer_bin"]?.stringValue ?? doc.mp4muxerBin
+        }
+
+        if let video = config["video"]?.objectValue {
+            if let hardwareEncoder = video["hardware_encoder"]?.stringValue {
+                doc.hardwareEncoder = hardwareEncoder
+            }
+            doc.encoderThreads = max(0, video["encoder_threads"]?.intValue ?? doc.encoderThreads)
+            doc.videotoolboxBitrateMultiplier = max(
+                0.1,
+                video["videotoolbox_bitrate_multiplier"]?.doubleValue ?? doc.videotoolboxBitrateMultiplier
+            )
+            doc.videotoolboxMinBitrateKbps = max(
+                1,
+                video["videotoolbox_min_bitrate_kbps"]?.intValue ?? doc.videotoolboxMinBitrateKbps
+            )
+            doc.videotoolboxMaxBitrateKbps = max(
+                doc.videotoolboxMinBitrateKbps,
+                video["videotoolbox_max_bitrate_kbps"]?.intValue ?? doc.videotoolboxMaxBitrateKbps
+            )
         }
 
         if let concurrency = config["concurrency"]?.objectValue {
@@ -314,6 +454,15 @@ struct ConfigDocument {
             tempDir,
             defaultURL: AppPaths.appSupportDirectory.appendingPathComponent("tmp")
         )
+        tempDirOverrides = tempDirOverrides.reduce(into: [:]) { result, entry in
+            let sourceRoot = entry.key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let tempRoot = entry.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sourceRoot.isEmpty, !tempRoot.isEmpty else { return }
+            result[sourceRoot] = Self.normalizedManagedPath(
+                tempRoot,
+                defaultURL: AppPaths.appSupportDirectory.appendingPathComponent("tmp")
+            )
+        }
     }
 
     private static func normalizedManagedPath(_ rawValue: String, defaultURL: URL) -> String {

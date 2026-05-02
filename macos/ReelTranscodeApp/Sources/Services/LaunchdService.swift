@@ -352,7 +352,7 @@ final class LaunchdService: @unchecked Sendable {
             <key>StandardErrorPath</key>
             <string>\(safeStderrPath)</string>
             <key>ProcessType</key>
-            <string>Background</string>
+            <string>Standard</string>
           </dict>
         </plist>
         """

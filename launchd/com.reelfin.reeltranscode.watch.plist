@@ -34,6 +34,6 @@
     <string>/Users/flo/Documents/GitHub/ReelTranscode/reports/giant_boy/launchd.stderr.log</string>
 
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Standard</string>
   </dict>
 </plist>

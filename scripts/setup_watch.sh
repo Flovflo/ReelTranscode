@@ -207,7 +207,7 @@ if prompt_yes_no "Activer le monitoring automatique au demarrage (launchd)?" "y"
     <key>StandardErrorPath</key>
     <string>$ROOT_DIR/reports/giant_boy/launchd.stderr.log</string>
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Standard</string>
   </dict>
 </plist>
 PLIST

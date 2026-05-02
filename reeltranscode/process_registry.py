@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
+PROCESS_OUTPUT_ENCODING = "utf-8"
+PROCESS_OUTPUT_ERRORS = "backslashreplace"
 
 
 class ShutdownRequestedError(RuntimeError):
@@ -35,12 +37,17 @@ class ManagedProcessRegistry:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=text,
+            encoding=PROCESS_OUTPUT_ENCODING if text else None,
+            errors=PROCESS_OUTPUT_ERRORS if text else None,
             cwd=str(cwd) if cwd else None,
             start_new_session=True,
         )
         self._register(process)
         try:
             stdout, stderr = process.communicate()
+        except BaseException:
+            self._terminate_process_tree(process)
+            raise
         finally:
             self._unregister(process.pid)
         return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
@@ -79,16 +86,39 @@ class ManagedProcessRegistry:
         for process in self._snapshot():
             if process.poll() is not None:
                 continue
+            if self._send_signal(process, sig):
+                LOGGER.info("Sent %s to managed child process tree pid=%s", sig.name, process.pid)
+
+    def _terminate_process_tree(self, process: subprocess.Popen, *, grace_period: float = 2.0) -> None:
+        if process.poll() is not None:
+            return
+        if self._send_signal(process, signal.SIGTERM):
+            LOGGER.info("Sent SIGTERM to managed child process tree after communication failure pid=%s", process.pid)
+        try:
+            process.wait(timeout=grace_period)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        if self._send_signal(process, signal.SIGKILL):
+            LOGGER.warning("Sent SIGKILL to managed child process tree after communication failure pid=%s", process.pid)
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            LOGGER.warning("Managed child process tree did not exit after SIGKILL pid=%s", process.pid)
+
+    @staticmethod
+    def _send_signal(process: subprocess.Popen, sig: signal.Signals) -> bool:
+        try:
+            os.killpg(process.pid, sig)
+            return True
+        except ProcessLookupError:
+            return False
+        except OSError:
             try:
-                os.killpg(process.pid, sig)
-            except ProcessLookupError:
-                continue
+                process.send_signal(sig)
+                return True
             except OSError:
-                try:
-                    process.send_signal(sig)
-                except OSError:
-                    continue
-            LOGGER.info("Sent %s to managed child process tree pid=%s", sig.name, process.pid)
+                return False
 
     def _wait_until_drained(self, *, timeout: float) -> bool:
         deadline = time.time() + timeout

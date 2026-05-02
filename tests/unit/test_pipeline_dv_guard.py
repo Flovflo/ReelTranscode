@@ -542,3 +542,35 @@ def test_pipeline_removes_dv_workspace_after_success(tmp_path: Path):
     assert report.status == "success"
     assert target.exists()
     assert not workspace.exists()
+
+
+def test_cleanup_removes_empty_runtime_temp_root(tmp_path: Path):
+    cfg = AppConfig.from_dict(
+        {
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+        }
+    )
+    state = StateStore(cfg.paths.state_db)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=Reporter(cfg))
+    temp_root = tmp_path / "watch" / ".reeltranscode-tmp"
+    workspace = temp_root / ".movie.1234567890.dovi"
+    workspace.mkdir(parents=True)
+    wrapper = workspace / "mp4muxer-fps-wrapper.sh"
+    wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+    try:
+        processor._cleanup_after_run(  # noqa: SLF001 - focused cleanup behavior
+            cleanup_paths=[wrapper],
+            cleanup_dirs=[workspace],
+            phase="test",
+        )
+    finally:
+        state.close()
+
+    assert not workspace.exists()
+    assert not temp_root.exists()

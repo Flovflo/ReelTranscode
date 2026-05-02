@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import time
 import uuid
@@ -18,7 +19,7 @@ from reeltranscode.retry import run_with_retry
 from reeltranscode.process_registry import ShutdownRequestedError
 from reeltranscode.subtitle_ocr import SubtitleOcrError, ocr_image_subtitle_to_srt_subprocess
 from reeltranscode.state_store import StateStore
-from reeltranscode.utils import atomic_replace, ensure_parent, now_utc_iso
+from reeltranscode.utils import RUNTIME_TEMP_DIRNAME, atomic_replace, ensure_parent, now_utc_iso
 from reeltranscode.validator import OutputValidator
 
 LOGGER = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ class PipelineProcessor:
         self.planner = CommandPlanner(config)
         self.runner = FFmpegRunner()
         self.validator = OutputValidator(config)
+        self.processing_policy_fp = config.processing_policy_fingerprint()
 
     def process_path(self, path: Path, source_root: Path | None, dry_run_override: bool | None = None) -> JobReport:
         dry_run = self.config.dry_run if dry_run_override is None else dry_run_override
@@ -87,27 +89,58 @@ class PipelineProcessor:
             inode = stat.st_ino
             size = stat.st_size
             mtime_ns = stat.st_mtime_ns
+            if size == 0:
+                status = JobStatus.SKIPPED
+                strategy_override = "skip"
+                case_label_override = "EMPTY_SOURCE"
+                reasons_override = ["Skipped zero-byte media file; source left in place for manual replacement"]
+                expected_safe_override = False
+                stream_fp = "empty-source"
+                metadata_fp = "empty-source"
+                return self._finalize_report(
+                    job_id=job_id,
+                    path=path,
+                    target_path=None,
+                    started_at=started_at,
+                    started_monotonic=started_monotonic,
+                    decision=decision,
+                    strategy_override=strategy_override,
+                    case_label_override=case_label_override,
+                    reasons_override=reasons_override,
+                    expected_safe_override=expected_safe_override,
+                    status=status,
+                    probe_command=probe_command,
+                    ffmpeg_commands=ffmpeg_commands,
+                    validations=validations,
+                    stream_fp=stream_fp,
+                    metadata_fp=metadata_fp,
+                    error_class=error_class,
+                    error_message=error_message,
+                    device=device,
+                    inode=inode,
+                    size=size,
+                    mtime_ns=mtime_ns,
+                )
 
             media, probe_command = self.analyzer.analyze(path)
             stream_fp = self.analyzer.stream_fingerprint(media)
             metadata_fp = self.analyzer.metadata_fingerprint(media)
 
             decision, compatibility = self.engine.decide(media)
-            preview_target_path = None
-            if decision.strategy != Strategy.NO_OP:
-                preview_target_path = self.planner.preview_target_path(path, source_root)
+            preview_target_path = self.planner.preview_target_path(path, source_root)
 
             should_skip, reason = self.state_store.should_skip(path, stream_fp, metadata_fp, size, mtime_ns)
             target_missing_for_skip = (
                 should_skip
                 and preview_target_path is not None
                 and not preview_target_path.exists()
+                and self._requires_output_publish_for_source(path, preview_target_path, source_root)
             )
             if should_skip and not target_missing_for_skip:
                 self.state_store.mark_job_started(
                     job_id,
                     path,
-                    None,
+                    preview_target_path,
                     "skip",
                     "STATE_SKIP",
                     stream_fp,
@@ -118,6 +151,17 @@ class PipelineProcessor:
                 case_label_override = "STATE_SKIP"
                 reasons_override = [f"Skipped due to state dedupe: {reason}"]
                 expected_safe_override = True
+                cleanup_note = self._cleanup_source_after_existing_validated_target(
+                    source_media=media,
+                    decision=decision,
+                    source=path,
+                    target=preview_target_path,
+                    source_root=source_root,
+                )
+                if cleanup_note:
+                    status = JobStatus.SUCCESS
+                    case_label_override = "STATE_SKIP_CLEANUP"
+                    reasons_override.append(cleanup_note)
             else:
                 if target_missing_for_skip and preview_target_path is not None:
                     validations.append(
@@ -182,22 +226,8 @@ class PipelineProcessor:
                         mtime_ns=mtime_ns,
                     )
 
-                plan = self.planner.build(media, decision, compatibility, source_root)
-                target_path = plan.target_path
-                temp_path = plan.temp_path
-                workspace_dir = plan.workspace_dir
-                external_subtitle_outputs = list(plan.external_subtitle_outputs)
-                cleanup_paths = list(plan.cleanup_paths)
-                cleanup_dirs = list(plan.cleanup_dirs)
-                validations.extend(plan.notes)
-                self._ensure_temp_capacity(path, size or 0, decision, plan)
-
-                if (
-                    target_path
-                    and target_path.exists()
-                    and not self.config.output.overwrite
-                    and decision.strategy.value != "no_op"
-                ):
+                if self._should_skip_existing_target(decision, preview_target_path, path, source_root):
+                    target_path = preview_target_path
                     self.state_store.mark_job_started(
                         job_id,
                         path,
@@ -212,6 +242,84 @@ class PipelineProcessor:
                     case_label_override = "TARGET_EXISTS"
                     reasons_override = [f"Skipped because target exists and overwrite=false: {target_path}"]
                     expected_safe_override = True
+                    cleanup_note = self._cleanup_source_after_existing_validated_target(
+                        source_media=media,
+                        decision=decision,
+                        source=path,
+                        target=target_path,
+                        source_root=source_root,
+                    )
+                    if cleanup_note:
+                        status = JobStatus.SUCCESS
+                        case_label_override = "TARGET_EXISTS_CLEANUP"
+                        reasons_override.append(cleanup_note)
+                    return self._finalize_report(
+                        job_id=job_id,
+                        path=path,
+                        target_path=target_path,
+                        started_at=started_at,
+                        started_monotonic=started_monotonic,
+                        decision=decision,
+                        strategy_override=strategy_override,
+                        case_label_override=case_label_override,
+                        reasons_override=reasons_override,
+                        expected_safe_override=expected_safe_override,
+                        status=status,
+                        probe_command=probe_command,
+                        ffmpeg_commands=ffmpeg_commands,
+                        validations=validations,
+                        stream_fp=stream_fp,
+                        metadata_fp=metadata_fp,
+                        error_class=error_class,
+                        error_message=error_message,
+                        device=device,
+                        inode=inode,
+                        size=size,
+                        mtime_ns=mtime_ns,
+                    )
+
+                plan = self.planner.build(media, decision, compatibility, source_root)
+                target_path = plan.target_path
+                temp_path = plan.temp_path
+                workspace_dir = plan.workspace_dir
+                external_subtitle_outputs = list(plan.external_subtitle_outputs)
+                cleanup_paths = list(plan.cleanup_paths)
+                cleanup_dirs = list(plan.cleanup_dirs)
+                validations.extend(plan.notes)
+                if decision.strategy != Strategy.NO_OP:
+                    self._ensure_temp_capacity(path, size or 0, decision, plan)
+
+                if self._should_skip_existing_target(decision, target_path, path, source_root):
+                    self.state_store.mark_job_started(
+                        job_id,
+                        path,
+                        target_path,
+                        "skip",
+                        "TARGET_EXISTS",
+                        stream_fp,
+                        metadata_fp,
+                    )
+                    status = JobStatus.SKIPPED
+                    strategy_override = "skip"
+                    case_label_override = "TARGET_EXISTS"
+                    reasons_override = [f"Skipped because target exists and overwrite=false: {target_path}"]
+                    expected_safe_override = True
+                    cleanup_note = self._cleanup_source_after_existing_validated_target(
+                        source_media=media,
+                        decision=decision,
+                        source=path,
+                        target=target_path,
+                        source_root=source_root,
+                    )
+                    if cleanup_note:
+                        status = JobStatus.SUCCESS
+                        case_label_override = "TARGET_EXISTS_CLEANUP"
+                        reasons_override.append(cleanup_note)
+                    self._cleanup_after_run(
+                        cleanup_paths=cleanup_paths,
+                        cleanup_dirs=cleanup_dirs,
+                        phase="target-exists-skip",
+                    )
                     return self._finalize_report(
                         job_id=job_id,
                         path=path,
@@ -250,6 +358,12 @@ class PipelineProcessor:
                 if decision.strategy.value == "no_op":
                     status = JobStatus.SUCCESS
                     validations.append("No-op: source already compliant")
+                    if self._requires_output_publish_for_source(path, target_path, source_root):
+                        if dry_run:
+                            status = JobStatus.SKIPPED
+                            validations.append("Dry-run: no-op source publish skipped")
+                        else:
+                            self._publish_no_op_source(media, decision, path, target_path, source_root, validations)
                 elif dry_run:
                     status = JobStatus.SKIPPED
                     validations.append("Dry-run: execution skipped")
@@ -397,7 +511,9 @@ class PipelineProcessor:
                     )
                     status = JobStatus.SUCCESS
 
-        except (ProbeError, CommandFailedError, RuntimeError, OSError, SubtitleOcrError, ShutdownRequestedError) as exc:
+        except Exception as exc:
+            # Production watchers must never leave a job stuck in "running" if an
+            # unexpected tool/runtime error escapes a lower layer.
             status = JobStatus.FAILED
             error_class = exc.__class__.__name__
             error_message = str(exc)
@@ -441,7 +557,128 @@ class PipelineProcessor:
             inode=inode,
             size=size,
             mtime_ns=mtime_ns,
+        )
+
+    def _should_skip_existing_target(
+        self,
+        decision,
+        target_path: Path | None,
+        source: Path,
+        source_root: Path | None,
+    ) -> bool:
+        return bool(
+            target_path
+            and target_path.exists()
+            and not self.config.output.overwrite
+            and (
+                decision.strategy != Strategy.NO_OP
+                or self._requires_output_publish_for_source(source, target_path, source_root)
             )
+        )
+
+    def _requires_output_publish_for_source(
+        self,
+        source: Path,
+        target: Path | None,
+        source_root: Path | None,
+    ) -> bool:
+        if target is None:
+            return False
+        try:
+            if source.resolve() == target.resolve():
+                return False
+        except OSError:
+            if source.absolute() == target.absolute():
+                return False
+        return True
+
+    def _publish_no_op_source(
+        self,
+        source_media,
+        decision,
+        source: Path,
+        target: Path | None,
+        source_root: Path | None,
+        validations: list[str],
+    ) -> None:
+        if target is None:
+            return
+        ensure_parent(target)
+        staging_path = target.parent / f".{target.name}.{uuid.uuid4().hex[:10]}.noop-publish"
+        try:
+            shutil.copy2(str(source), str(staging_path))
+            if staging_path.stat().st_size != source.stat().st_size:
+                raise OSError(f"No-op publish copy size mismatch for {target}")
+            self._fsync_file(staging_path)
+            atomic_replace(staging_path, target)
+            if self.config.validation.run_post_ffprobe:
+                published_media, _ = self.analyzer.analyze(target)
+                validation = self.validator.validate(source_media, published_media, decision)
+                if validation.ok:
+                    if validation.notes:
+                        validations.extend(validation.notes)
+                    validations.append("No-op source published to optimized output without re-encoding")
+                else:
+                    validations.extend(validation.reasons)
+                    raise RuntimeError(
+                        "No-op published output failed validation: " + "; ".join(validation.reasons)
+                    )
+            else:
+                validations.append("No-op source published to optimized output without re-encoding")
+            self._post_success_source_handling(source, target, source_root)
+        except Exception:
+            if staging_path.exists():
+                try:
+                    staging_path.unlink()
+                except OSError:
+                    pass
+            raise
+
+    def _cleanup_source_after_existing_validated_target(
+        self,
+        source_media,
+        decision,
+        source: Path,
+        target: Path | None,
+        source_root: Path | None,
+    ) -> str | None:
+        if target is None or not target.exists() or not source.exists():
+            return None
+        try:
+            if source.resolve() == target.resolve():
+                return None
+        except OSError:
+            if source.absolute() == target.absolute():
+                return None
+        if (
+            self.config.output.mode not in {"archive_original", "replace_original"}
+            and not self.config.delete_original_after_success_for(source, source_root)
+        ):
+            return None
+
+        try:
+            target_media, _ = self.analyzer.analyze(target)
+            validation = self.validator.validate(source_media, target_media, decision)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Unable to validate existing target before source cleanup: %s", exc)
+            return None
+        if not validation.ok:
+            LOGGER.warning(
+                "Existing target failed validation; keeping source in place: %s",
+                "; ".join(validation.reasons),
+            )
+            return None
+
+        self._post_success_source_handling(source, target, source_root)
+        return "Existing optimized target validated; source cleanup completed"
+
+    @staticmethod
+    def _fsync_file(path: Path) -> None:
+        try:
+            with path.open("rb") as handle:
+                os.fsync(handle.fileno())
+        except OSError:
+            return
 
     def _prepare_ocr_subtitles(self, source_path: Path, plan) -> None:
         ffmpeg_bin = self.config.tooling.ffmpeg_bin
@@ -645,17 +882,29 @@ class PipelineProcessor:
             report.error_message = final_error_message
 
         self.state_store.mark_job_finished(job_id, final_status, final_error_class, final_error_message, report_path)
-        if stream_fp and metadata_fp:
+
+        file_state_stream_fp = stream_fp
+        file_state_metadata_fp = metadata_fp
+        if (
+            final_status == JobStatus.FAILED
+            and not file_state_stream_fp
+            and final_error_class not in {"ShutdownRequestedError", "InterruptedError"}
+        ):
+            file_state_stream_fp = f"analysis-failed:{final_error_class or 'UnknownError'}"
+            file_state_metadata_fp = file_state_stream_fp
+
+        if file_state_stream_fp and file_state_metadata_fp and final_error_class != "ShutdownRequestedError":
             self.state_store.upsert_file_state(
                 path,
                 device,
                 inode,
                 size,
                 mtime_ns,
-                stream_fp,
-                metadata_fp,
+                file_state_stream_fp,
+                file_state_metadata_fp,
                 final_status,
                 job_id,
+                self.processing_policy_fp,
             )
         return report
 
@@ -718,7 +967,16 @@ class PipelineProcessor:
         cleanup_dirs: list[Path],
         phase: str,
     ) -> None:
+        runtime_temp_roots: set[Path] = set()
+
+        def remember_runtime_temp_root(path: Path) -> None:
+            for candidate in [path, *path.parents]:
+                if candidate.name == RUNTIME_TEMP_DIRNAME:
+                    runtime_temp_roots.add(candidate)
+                    return
+
         for cleanup_path in cleanup_paths:
+            remember_runtime_temp_root(cleanup_path.parent)
             if cleanup_path.exists():
                 try:
                     cleanup_path.unlink()
@@ -726,11 +984,21 @@ class PipelineProcessor:
                     LOGGER.warning("Unable to remove intermediate file after %s: %s", phase, cleanup_path)
 
         for cleanup_dir in cleanup_dirs:
+            remember_runtime_temp_root(cleanup_dir)
             if cleanup_dir.exists():
                 try:
                     shutil.rmtree(cleanup_dir)
                 except OSError:
                     LOGGER.warning("Unable to remove intermediate directory after %s: %s", phase, cleanup_dir)
+
+        for temp_root in sorted(runtime_temp_roots, key=lambda path: len(path.parts), reverse=True):
+            try:
+                temp_root.rmdir()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                # Keep non-empty temp roots; another job may still be using them.
+                continue
 
     def _archive_path(self, source: Path, source_root: Path | None) -> Path:
         if source_root:

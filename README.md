@@ -190,6 +190,30 @@ Bonnes pratiques:
 - ne jamais pointer `temp_dir` vers un dossier media surveille
 - si `temp_dir` est trop petit, ReelTranscode peut automatiquement basculer vers un cache temporaire sur le volume de sortie optimise
 
+Options de placement:
+- `paths.temp_dir_strategy: source_first`
+  prefere un `.reeltranscode-tmp` a cote du media source, puis bascule vers `paths.temp_dir` si besoin
+- `paths.temp_dir_strategy: configured_first`
+  prefere le scratch root configure, puis ne retombe sur le volume source qu'en secours
+- `paths.temp_dir_overrides`
+  permet d'assigner un scratch root different par dossier surveille, sans hardcoder un setup unique
+
+Exemple avec un SSD externe dedie:
+
+```yaml
+paths:
+  temp_dir: /Volumes/Speedy_Boy/ReelTranscode/tmp
+  temp_dir_strategy: configured_first
+  temp_dir_overrides:
+    /Volumes/Giant_Boy_Plex/Films/Transcode: /Volumes/Speedy_Boy/ReelTranscode/films-tmp
+    /Volumes/Giant_Boy_Plex/Series/Transcode: /Volumes/Speedy_Boy/ReelTranscode/series-tmp
+```
+
+Ce modele reste portable:
+- les workspaces DV/OCR lourds partent sur le SSD rapide
+- chaque bibliotheque peut avoir son propre scratch root
+- les sources et les sorties restent la ou chaque utilisateur les a configurees
+
 ## CI/CD GitHub
 
 Deux workflows sont fournis:

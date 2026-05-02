@@ -238,7 +238,8 @@ def _run_status(config: AppConfig, state: StateStore, limit: int, json_output: b
     print(
         "Watcher: "
         f"running={runtime['watch_running']} paused={runtime['watch_paused']} "
-        f"queued={runtime['queued_paths']} active_workers={runtime['active_workers']}/{runtime['max_workers']}"
+        f"queued={runtime['queued_paths']} active_workers={runtime['active_workers']}/{runtime['max_workers']} "
+        f"stale={runtime.get('watch_stale', False)} updated_age_seconds={runtime.get('updated_age_seconds')}"
     )
     dv_caps = payload["capabilities"]
     print(

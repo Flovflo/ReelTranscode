@@ -65,6 +65,8 @@ class StreamInfo:
     height: int | None = None
     avg_frame_rate: str | None = None
     r_frame_rate: str | None = None
+    time_base: str | None = None
+    nb_frames: int | None = None
     bit_rate: int | None = None
     channels: int | None = None
     channel_layout: str | None = None
@@ -103,6 +105,8 @@ class StreamInfo:
             height=raw.get("height"),
             avg_frame_rate=raw.get("avg_frame_rate"),
             r_frame_rate=raw.get("r_frame_rate"),
+            time_base=raw.get("time_base"),
+            nb_frames=_probe_int(raw.get("nb_frames")),
             bit_rate=parsed_bit_rate,
             channels=raw.get("channels"),
             channel_layout=raw.get("channel_layout"),
@@ -318,6 +322,16 @@ def _probe_duration_seconds(value: Any) -> float | None:
             return float(value)
         except ValueError:
             return None
+    return None
+
+
+def _probe_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
     return None
 
 

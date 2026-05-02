@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import math
+import platform
 import shutil
+import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from reeltranscode.config import AppConfig
 from reeltranscode.analyzer import FFprobeAnalyzer
+from reeltranscode.languages import normalize_language_code
 from reeltranscode.models import (
     CommandStep,
     CompatibilityDetails,
@@ -16,6 +20,7 @@ from reeltranscode.models import (
     MediaInfo,
     OcrSubtitleTask,
     Strategy,
+    StreamInfo,
 )
 from reeltranscode.tooling import ToolchainResolver
 from reeltranscode.utils import RUNTIME_TEMP_DIRNAME, ensure_dir
@@ -58,7 +63,7 @@ class CommandPlanner:
         if decision.strategy == Strategy.NO_OP:
             return ExecutionPlan(
                 source_path=media.path,
-                target_path=None,
+                target_path=target_path,
                 temp_path=None,
                 workspace_dir=None,
                 strategy=decision.strategy,
@@ -207,6 +212,7 @@ class CommandPlanner:
         else:
             cleanup_cmd.extend(["-map_chapters", "-1"])
         cleanup_cmd.extend(["-map_metadata", "0", "-c", "copy"])
+        cleanup_cmd.extend(self._mp4_cleanup_stream_metadata_args(media))
 
         source_video = media.primary_video
         if source_video is not None and (source_video.codec_name or "").lower() == "hevc":
@@ -224,6 +230,60 @@ class CommandPlanner:
         ]
         notes = ["Normalized final MP4 container via ffmpeg copy remux for Apple-native playback stability"]
         return steps, [plan.temp_path], cleaned_path, notes
+
+    def _mp4_cleanup_stream_metadata_args(self, media: MediaInfo) -> list[str]:
+        args: list[str] = []
+
+        for out_audio_index, stream in enumerate(media.audio_streams):
+            language = normalize_language_code(stream.language)
+            args.extend([f"-metadata:s:a:{out_audio_index}", f"language={language}"])
+            if stream.title:
+                args.extend([f"-metadata:s:a:{out_audio_index}", f"title={stream.title}"])
+            args.extend(
+                [
+                    f"-disposition:a:{out_audio_index}",
+                    "default" if stream.disposition.default else "0",
+                ]
+            )
+
+        if self._should_add_aac_fallback(media):
+            fallback_out_audio_index = len(media.audio_streams)
+            args.extend(
+                [
+                    f"-metadata:s:a:{fallback_out_audio_index}",
+                    "title=AAC Stereo Fallback",
+                    f"-disposition:a:{fallback_out_audio_index}",
+                    "0",
+                ]
+            )
+
+        subtitle_states = FFprobeAnalyzer.subtitle_track_states(media)
+        output_sub_index = 0
+        for source_sub_index, stream in enumerate(media.subtitle_streams):
+            state = subtitle_states[source_sub_index] if source_sub_index < len(subtitle_states) else None
+            if self._is_empty_image_subtitle_stream(media, stream):
+                continue
+            if stream.is_image_subtitle and self.config.subtitles.drop_incompatible_image_subtitles:
+                continue
+
+            language = normalize_language_code(state.language if state else stream.language)
+            args.extend([f"-metadata:s:s:{output_sub_index}", f"language={language}"])
+            subtitle_title = self._subtitle_title_for_dovi(
+                (state.title if state else stream.title),
+                (state.hearing_impaired if state else stream.disposition.hearing_impaired),
+                (state.captions if state else stream.disposition.captions),
+            )
+            if subtitle_title:
+                args.extend([f"-metadata:s:s:{output_sub_index}", f"title={subtitle_title}"])
+            args.extend(
+                [
+                    f"-disposition:s:{output_sub_index}",
+                    self._subtitle_disposition_value(stream, state=state),
+                ]
+            )
+            output_sub_index += 1
+
+        return args
 
     def build_hevc_mp4_stabilization_steps(
         self,
@@ -567,7 +627,9 @@ class CommandPlanner:
 
         if not ocr_subtitle_tasks:
             output_sub_index = 0
+            subtitle_states = FFprobeAnalyzer.subtitle_track_states(media)
             for source_sub_index, stream in enumerate(media.subtitle_streams):
+                state = subtitle_states[source_sub_index] if source_sub_index < len(subtitle_states) else None
                 if self._is_empty_image_subtitle_stream(media, stream):
                     dropped_subtitle_streams.append(source_sub_index)
                     notes.append(f"Dropped empty image subtitle stream {source_sub_index} (no frames/bytes)")
@@ -583,18 +645,18 @@ class CommandPlanner:
                         "Image subtitles require OCR for Apple-native MP4 output; refusing to externalize "
                         f"stream {source_sub_index} ({stream.codec_name or 'unknown'})"
                     )
-                lang = (stream.language or "und").lower()
+                lang = normalize_language_code(state.language if state else stream.language)
                 cmd.extend(["-map", f"0:s:{source_sub_index}"])
                 subtitle_title = self._subtitle_title_for_dovi(
-                    stream.title,
-                    stream.disposition.hearing_impaired,
-                    stream.disposition.captions,
+                    (state.title if state else stream.title),
+                    (state.hearing_impaired if state else stream.disposition.hearing_impaired),
+                    (state.captions if state else stream.disposition.captions),
                 )
                 if meta := self._dovi_meta_arg("s", output_sub_index, lang, subtitle_title):
                     cmd.extend(["-meta", meta])
-                if stream.disposition.default:
+                if state.default if state else stream.disposition.default:
                     cmd.extend(["-default", f"s:{output_sub_index}"])
-                if stream.disposition.forced:
+                if state.forced if state else stream.disposition.forced:
                     cmd.extend(["-forced", f"s:{output_sub_index}"])
                 output_sub_index += 1
 
@@ -681,7 +743,7 @@ class CommandPlanner:
         decision: Decision,
         compatibility: CompatibilityDetails,
     ) -> list[str]:
-        if decision.strategy not in {Strategy.VIDEO_ONLY, Strategy.FULL_PIPELINE} and not compatibility.requires_video_transcode:
+        if not compatibility.requires_video_transcode and not decision.force_sdr:
             args = ["-c:v", "copy"]
             target_is_mp4 = self._target_suffix() == ".mp4"
             source = media.primary_video
@@ -693,13 +755,20 @@ class CommandPlanner:
         if source is None:
             return ["-c:v", "copy"]
 
-        use_hevc = self.config.video.preferred_codec == "hevc"
-        fps = _fps(source.avg_frame_rate or source.r_frame_rate) or 24.0
+        use_hevc = self._should_target_hevc(compatibility)
+        source_cfr = _source_constant_frame_rate(media, source)
+        fps = _fps(source_cfr or source.avg_frame_rate or source.r_frame_rate) or 24.0
         gop = max(24, int(math.ceil(fps * self.config.video.keyframe_interval_seconds)))
 
         args: list[str] = []
         if use_hevc:
-            args.extend(["-c:v", "hevc_videotoolbox", "-tag:v", self.config.video.hevc_tag])
+            codec = self._selected_video_encoder("hevc")
+            if codec == "hevc_videotoolbox":
+                args.extend(self._videotoolbox_base_args(codec=codec, media=media, source=source))
+                args.extend(["-tag:v", self.config.video.hevc_tag])
+            else:
+                args.extend(["-c:v", "libx265", "-preset", "medium", "-crf", "18", "-tag:v", self.config.video.hevc_tag])
+                args.extend(self._video_thread_limit_args(codec="libx265"))
             if decision.force_sdr:
                 args.extend(["-profile:v", "main", "-pix_fmt", "yuv420p"])
             else:
@@ -711,14 +780,20 @@ class CommandPlanner:
                 else:
                     args.extend(["-profile:v", "main", "-pix_fmt", "yuv420p"])
         else:
-            args.extend(["-c:v", "h264_videotoolbox", "-profile:v", "high", "-pix_fmt", "yuv420p"])
-
-        target_bitrate = _video_target_bitrate(source.bit_rate)
-        args.extend(["-b:v", f"{target_bitrate}"])
+            codec = self._selected_video_encoder("h264")
+            if codec == "h264_videotoolbox":
+                args.extend(self._videotoolbox_base_args(codec=codec, media=media, source=source))
+                args.extend(["-profile:v", "high", "-pix_fmt", "yuv420p"])
+            else:
+                args.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-profile:v", "high", "-pix_fmt", "yuv420p"])
+                args.extend(self._video_thread_limit_args(codec="libx264"))
+        args.extend(self._video_filter_args(source))
         args.extend(["-g", str(gop), "-keyint_min", str(gop)])
 
-        if self.config.video.force_cfr:
-            args.extend(["-vsync", "cfr"])
+        if self.config.video.force_cfr or source_cfr is not None:
+            args.extend(["-fps_mode", "cfr"])
+            if source_cfr is not None:
+                args.extend(["-r:v", source_cfr])
 
         if decision.force_sdr:
             args.extend(["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"])
@@ -735,6 +810,98 @@ class CommandPlanner:
                     args.extend(["-colorspace", source.color_space])
 
         return args
+
+    def _selected_video_encoder(self, target_codec: str) -> str:
+        if self._should_use_videotoolbox(target_codec):
+            return f"{target_codec}_videotoolbox"
+        if target_codec == "hevc":
+            return "libx265"
+        return "libx264"
+
+    def _should_target_hevc(self, compatibility: CompatibilityDetails) -> bool:
+        if self.config.video.preferred_codec != "hevc":
+            return False
+
+        policy = self.config.video.hardware_encoder.strip().lower()
+        if policy not in {"auto", "videotoolbox"}:
+            return True
+
+        if self._should_use_videotoolbox("hevc"):
+            return True
+
+        preserve_hdr_pipeline = compatibility.hdr10_present or compatibility.dv_present
+        if preserve_hdr_pipeline:
+            return True
+
+        if self.config.video.fallback_codec == "h264" and self._should_use_videotoolbox("h264"):
+            return False
+
+        return True
+
+    def _should_use_videotoolbox(self, target_codec: str) -> bool:
+        policy = self.config.video.hardware_encoder.strip().lower()
+        if policy == "software":
+            return False
+        if platform.system() != "Darwin":
+            return False
+        encoder = f"{target_codec}_videotoolbox"
+        return _ffmpeg_encoder_available(
+            self.config.tooling.ffmpeg_bin,
+            encoder,
+        ) and _ffmpeg_videotoolbox_session_available(
+            self.config.tooling.ffmpeg_bin,
+            encoder,
+        )
+
+    def _videotoolbox_base_args(self, *, codec: str, media: MediaInfo, source: StreamInfo) -> list[str]:
+        args = ["-c:v", codec]
+        for option, value in (
+            ("-allow_sw", "0"),
+            ("-power_efficient", "1"),
+            ("-spatial_aq", "1"),
+        ):
+            if _ffmpeg_encoder_option_available(self.config.tooling.ffmpeg_bin, codec, option):
+                args.extend([option, value])
+        args.extend(self._videotoolbox_bitrate_args(media, source))
+        return args
+
+    def _videotoolbox_bitrate_args(self, media: MediaInfo, source: StreamInfo) -> list[str]:
+        target_kbps = self._videotoolbox_target_bitrate_kbps(media, source)
+        maxrate_kbps = max(target_kbps, int(target_kbps * 1.5))
+        bufsize_kbps = max(maxrate_kbps, int(target_kbps * 2.0))
+        return [
+            "-b:v",
+            f"{target_kbps}k",
+            "-maxrate",
+            f"{maxrate_kbps}k",
+            "-bufsize",
+            f"{bufsize_kbps}k",
+        ]
+
+    def _videotoolbox_target_bitrate_kbps(self, media: MediaInfo, source: StreamInfo) -> int:
+        source_bitrate = source.bit_rate or _estimated_video_bitrate(media, source)
+        scaled_kbps = int((source_bitrate / 1000) * self.config.video.videotoolbox_bitrate_multiplier)
+        return min(
+            self.config.video.videotoolbox_max_bitrate_kbps,
+            max(self.config.video.videotoolbox_min_bitrate_kbps, scaled_kbps),
+        )
+
+    def _video_thread_limit_args(self, *, codec: str) -> list[str]:
+        threads = self.config.video.encoder_threads
+        if threads <= 0:
+            return []
+        args = ["-threads:v", str(threads)]
+        if codec == "libx265":
+            x265_params = [f"pools={threads}", "frame-threads=1"]
+            if threads == 1:
+                x265_params.append("wpp=0")
+            args.extend(["-x265-params", ":".join(x265_params)])
+        return args
+
+    def _video_filter_args(self, source: StreamInfo) -> list[str]:
+        if not _is_interlaced(source):
+            return []
+        return ["-vf", "bwdif=mode=send_frame:parity=auto:deint=all,setfield=mode=prog"]
 
     def _mp4_mux_args(
         self,
@@ -815,7 +982,7 @@ class CommandPlanner:
                     bitrate = "192k"
                 args.extend([f"-c:a:{out_audio_index}", target_codec, f"-b:a:{out_audio_index}", bitrate])
 
-            language = stream.language or "und"
+            language = normalize_language_code(stream.language)
             args.extend([f"-metadata:s:a:{out_audio_index}", f"language={language}"])
             if stream.title:
                 args.extend([f"-metadata:s:a:{out_audio_index}", f"title={stream.title}"])
@@ -851,6 +1018,14 @@ class CommandPlanner:
             )
         return args
 
+    def _should_add_aac_fallback(self, media: MediaInfo) -> bool:
+        if self._target_suffix() != ".mp4" or not self.config.audio.ensure_aac_fallback_stereo_when_missing:
+            return False
+        return bool(media.audio_streams) and not any(
+            (stream.codec_name or "").lower() == "aac" and (stream.channels or 2) <= 2
+            for stream in media.audio_streams
+        )
+
     def _subtitle_args(
         self,
         media: MediaInfo,
@@ -877,8 +1052,10 @@ class CommandPlanner:
 
         output_sub_index = 0
         next_ocr_input_index = ocr_input_start_index
+        subtitle_states = FFprobeAnalyzer.subtitle_track_states(media)
         for source_sub_index, stream in enumerate(media.subtitle_streams):
-            lang = (stream.language or "und").lower()
+            state = subtitle_states[source_sub_index] if source_sub_index < len(subtitle_states) else None
+            lang = normalize_language_code(state.language if state else stream.language)
             if self._is_empty_image_subtitle_stream(media, stream):
                 dropped_subtitle_streams.append(source_sub_index)
                 notes.append(f"Dropped empty image subtitle stream {source_sub_index} (no frames/bytes)")
@@ -893,13 +1070,18 @@ class CommandPlanner:
                     args.extend([f"-c:s:{output_sub_index}", "mov_text"])
                     args.extend([f"-metadata:s:s:{output_sub_index}", f"language={lang}"])
                     subtitle_title = self._subtitle_title_for_dovi(
-                        stream.title,
-                        stream.disposition.hearing_impaired,
-                        stream.disposition.captions,
+                        (state.title if state else stream.title),
+                        (state.hearing_impaired if state else stream.disposition.hearing_impaired),
+                        (state.captions if state else stream.disposition.captions),
                     )
                     if subtitle_title:
                         args.extend([f"-metadata:s:s:{output_sub_index}", f"title={subtitle_title}"])
-                    args.extend([f"-disposition:s:{output_sub_index}", self._subtitle_disposition_value(stream)])
+                    args.extend(
+                        [
+                            f"-disposition:s:{output_sub_index}",
+                            self._subtitle_disposition_value(stream, state=state),
+                        ]
+                    )
                     notes.append(f"OCR subtitle stream {source_sub_index} ({stream.codec_name or 'unknown'}) to mov_text")
                     output_sub_index += 1
                     next_ocr_input_index += 1
@@ -919,12 +1101,17 @@ class CommandPlanner:
                 args.extend(["-map", f"{input_index}:s:{source_sub_index}"])
             args.extend([f"-c:s:{output_sub_index}", "mov_text"])
             args.extend([f"-metadata:s:s:{output_sub_index}", f"language={lang}"])
-            if stream.title:
-                args.extend([f"-metadata:s:s:{output_sub_index}", f"title={stream.title}"])
+            subtitle_title = self._subtitle_title_for_dovi(
+                (state.title if state else stream.title),
+                (state.hearing_impaired if state else stream.disposition.hearing_impaired),
+                (state.captions if state else stream.disposition.captions),
+            )
+            if subtitle_title:
+                args.extend([f"-metadata:s:s:{output_sub_index}", f"title={subtitle_title}"])
             args.extend(
                 [
                     f"-disposition:s:{output_sub_index}",
-                    self._subtitle_disposition_value(stream),
+                    self._subtitle_disposition_value(stream, state=state),
                 ]
             )
             output_sub_index += 1
@@ -1031,7 +1218,7 @@ class CommandPlanner:
         source_sub_index: int,
         workspace_dir: Path,
     ) -> OcrSubtitleTask:
-        lang = (stream.language or "und").lower()
+        lang = normalize_language_code(stream.language)
         title = self._subtitle_title_for_dovi(stream.title, stream.disposition.hearing_impaired, stream.disposition.captions)
         # Keep the extracted PGS source filename language-neutral because pgsrip
         # reparses dotted suffixes as language markers and may rewrite the path.
@@ -1113,27 +1300,44 @@ class CommandPlanner:
         return preferred_root
 
     def _preferred_temp_root(self, source: Path) -> Path:
+        configured_temp_root = self._configured_temp_root(source)
+        if self.config.paths.temp_dir_strategy == "configured_first":
+            return configured_temp_root
+
         source_parent = source.expanduser().parent
         if source_parent.exists():
             return self._source_temp_root(source)
-        return self._configured_temp_root()
+        return configured_temp_root
 
     def _source_temp_root(self, source: Path) -> Path:
         return (source.expanduser().parent / RUNTIME_TEMP_DIRNAME).resolve()
 
     def _temp_root_candidates(self, source: Path) -> list[Path]:
-        candidates = [self._preferred_temp_root(source)]
-        configured_temp_root = self._configured_temp_root()
-        if configured_temp_root not in candidates:
-            candidates.append(configured_temp_root)
+        candidates: list[Path] = []
+        configured_temp_root = self._configured_temp_root(source)
+        source_parent = source.expanduser().parent
+        source_temp_root = self._source_temp_root(source) if source_parent.exists() else None
+
+        def append(candidate: Path | None) -> None:
+            if candidate is None:
+                return
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+        if self.config.paths.temp_dir_strategy == "configured_first":
+            append(configured_temp_root)
+            append(source_temp_root)
+        else:
+            append(source_temp_root)
+            append(configured_temp_root)
+
         if self.config.output.mode != "replace_original":
-            output_temp_root = (self.config.output.output_root / RUNTIME_TEMP_DIRNAME).expanduser().resolve()
-            if output_temp_root not in candidates:
-                candidates.append(output_temp_root)
+            output_temp_root = (self.config.output_root_for(source) / RUNTIME_TEMP_DIRNAME).expanduser().resolve()
+            append(output_temp_root)
         return candidates
 
-    def _configured_temp_root(self) -> Path:
-        return self.config.paths.temp_dir.expanduser().resolve()
+    def _configured_temp_root(self, source: Path) -> Path:
+        return self.config.temp_dir_for(source)
 
     @staticmethod
     def _estimated_temp_requirement(
@@ -1154,7 +1358,7 @@ class CommandPlanner:
             return root.expanduser().resolve()
         if source is not None:
             return self._preferred_temp_root(source)
-        return self._configured_temp_root()
+        return self.config.paths.temp_dir.expanduser().resolve()
 
     def _dovi_mp4box_profile_arg(self, media: MediaInfo) -> str | None:
         dv = FFprobeAnalyzer.inspect_dolby_vision(media)
@@ -1249,7 +1453,7 @@ class CommandPlanner:
     def _dovi_meta_arg(track_type: str, track_index: int, language: str | None, title: str | None) -> str | None:
         parts = [f"{track_type}:{track_index}"]
         if language:
-            parts.append(f"lang={language.lower()}")
+            parts.append(f"lang={normalize_language_code(language)}")
         if title:
             sanitized = title.replace(":", " - ").replace("\n", " ").replace('"', "'").strip()
             if sanitized:
@@ -1267,17 +1471,22 @@ class CommandPlanner:
         return target_path.with_name(f"{target_path.stem}__stream_{subtitle_index}.{lang}.{ext}")
 
     @staticmethod
-    def _subtitle_disposition_value(stream) -> str:
+    def _subtitle_disposition_value(stream, *, state=None) -> str:
         values: list[str] = []
-        if stream.disposition.default:
+        default = state.default if state is not None else stream.disposition.default
+        forced = state.forced if state is not None else stream.disposition.forced
+        hearing_impaired = state.hearing_impaired if state is not None else stream.disposition.hearing_impaired
+        captions = state.captions if state is not None else stream.disposition.captions
+        title = state.title if state is not None else stream.title
+        if default:
             values.append("default")
-        if stream.disposition.forced:
+        if forced:
             values.append("forced")
-        if stream.disposition.hearing_impaired:
+        if hearing_impaired:
             values.append("hearing_impaired")
-        if stream.disposition.captions:
+        if captions:
             values.append("captions")
-        if not values and stream.title and "sdh" in stream.title.lower():
+        if not values and title and "sdh" in title.lower():
             values.extend(["hearing_impaired", "captions"])
         return "+".join(values) if values else "0"
 
@@ -1334,6 +1543,146 @@ def _fps(value: str | None) -> float | None:
         return float(value)
     except ValueError:
         return None
+
+
+def _source_constant_frame_rate(media: MediaInfo, source: StreamInfo) -> str | None:
+    if _is_interlaced(source):
+        return None
+    avg = _fps(source.avg_frame_rate)
+    real = _fps(source.r_frame_rate)
+    if avg is None:
+        return None
+    if real is not None and abs(avg - real) <= max(0.01, real * 0.001):
+        return source.avg_frame_rate or source.r_frame_rate
+    if _legacy_avi_timeline_matches_frame_rate(media, source, avg):
+        return source.avg_frame_rate
+    return None
+
+
+def _legacy_avi_timeline_matches_frame_rate(media: MediaInfo, source: StreamInfo, avg_fps: float) -> bool:
+    if "avi" not in media.container_names:
+        return False
+    codec = (source.codec_name or "").lower()
+    if codec not in {"mpeg4", "msmpeg4v1", "msmpeg4v2", "msmpeg4v3", "mpeg2video", "h263", "dvvideo"}:
+        return False
+    if source.time_base and not _time_base_matches_fps(source.time_base, avg_fps):
+        return False
+    if source.nb_frames is None or source.duration is None or source.duration <= 0:
+        return False
+    observed_fps = source.nb_frames / source.duration
+    return abs(observed_fps - avg_fps) <= max(0.05, avg_fps * 0.002)
+
+
+def _time_base_matches_fps(value: str, fps: float) -> bool:
+    if "/" not in value:
+        return False
+    left, right = value.split("/", 1)
+    try:
+        numerator = float(left)
+        denominator = float(right)
+    except ValueError:
+        return False
+    if numerator <= 0 or denominator <= 0:
+        return False
+    implied_fps = denominator / numerator
+    if implied_fps < 1:
+        return False
+    return abs(implied_fps - fps) <= max(0.05, fps * 0.002)
+
+
+def _estimated_video_bitrate(media: MediaInfo, source: StreamInfo) -> int:
+    if media.bit_rate:
+        audio_bitrate = sum(stream.bit_rate or 0 for stream in media.audio_streams)
+        container_bitrate = max(0, media.bit_rate - audio_bitrate)
+        if container_bitrate:
+            return container_bitrate
+
+    width = source.width or 1920
+    height = source.height or 1080
+    pixels = width * height
+    if pixels >= 3840 * 1600:
+        return 24_000_000
+    if pixels >= 1920 * 1000:
+        return 8_000_000
+    if pixels >= 1280 * 700:
+        return 5_000_000
+    return 2_500_000
+
+
+@lru_cache(maxsize=32)
+def _ffmpeg_encoder_available(ffmpeg_bin: str, encoder: str) -> bool:
+    try:
+        completed = subprocess.run(
+            [ffmpeg_bin, "-hide_banner", "-encoders"],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return encoder in completed.stdout
+
+
+@lru_cache(maxsize=64)
+def _ffmpeg_encoder_options(ffmpeg_bin: str, encoder: str) -> str:
+    try:
+        completed = subprocess.run(
+            [ffmpeg_bin, "-hide_banner", "-h", f"encoder={encoder}"],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return completed.stdout
+
+
+def _ffmpeg_encoder_option_available(ffmpeg_bin: str, encoder: str, option: str) -> bool:
+    return option in _ffmpeg_encoder_options(ffmpeg_bin, encoder)
+
+
+@lru_cache(maxsize=32)
+def _ffmpeg_videotoolbox_session_available(ffmpeg_bin: str, encoder: str) -> bool:
+    if not encoder.endswith("_videotoolbox"):
+        return False
+    try:
+        completed = subprocess.run(
+            [
+                ffmpeg_bin,
+                "-hide_banner",
+                "-nostdin",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=640x360:rate=24:duration=0.25",
+                "-frames:v",
+                "1",
+                "-c:v",
+                encoder,
+                "-allow_sw",
+                "0",
+                "-b:v",
+                "1000k",
+                "-f",
+                "null",
+                "-",
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def _is_interlaced(source: StreamInfo) -> bool:
+    field_order = (source.field_order or "").lower()
+    return bool(field_order and field_order not in {"unknown", "progressive"})
 
 
 def _video_target_bitrate(source_bit_rate: int | None) -> str:

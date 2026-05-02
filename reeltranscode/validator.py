@@ -5,6 +5,7 @@ import unicodedata
 
 from reeltranscode.analyzer import FFprobeAnalyzer
 from reeltranscode.config import AppConfig
+from reeltranscode.languages import normalize_language_code
 from reeltranscode.models import Decision, ExecutionPlan, MediaInfo, ValidationResult
 
 START_TIME_TOLERANCE_SECONDS = 0.25
@@ -62,9 +63,15 @@ class OutputValidator:
                     f"via {source_desc} but output has no explicit Dolby Vision proof{brand_note}"
                 )
             elif source_dv.profile and output_dv.profile and source_dv.profile != output_dv.profile:
-                if _looks_like_dv_profile_8_1_ambiguity(source_dv.profile, output_dv.profile, source, output):
+                if _looks_like_dv_profile_8_compatibility_ambiguity(
+                    source_dv.profile,
+                    output_dv.profile,
+                    source,
+                    output,
+                ):
                     notes.append(
-                        "Dolby Vision preserved despite ambiguous 8.1/8.0 reporting because HDR10-compatible signaling remained intact"
+                        "Dolby Vision profile 8 compatibility reporting changed, but explicit DV proof and "
+                        "HDR10-compatible signaling remained intact"
                     )
                 else:
                     reasons.append(
@@ -118,11 +125,9 @@ class OutputValidator:
                 else:
                     reasons.append(f"Duration delta too high: {delta:.2f}s")
 
-        reasons.extend(self._validate_video_timing(source, output))
+        reasons.extend(self._validate_video_timing(source, output, plan=plan))
 
-        externalized_subtitles = len(plan.external_subtitle_outputs) if plan else 0
-        dropped_subtitles = len(plan.dropped_subtitle_streams) if plan else 0
-        expected_output_stream_count = max(0, len(source.streams) - externalized_subtitles - dropped_subtitles)
+        expected_output_stream_count = _expected_output_stream_count(source, plan, self.config)
         stream_delta = abs(expected_output_stream_count - len(output.streams))
         if stream_delta > self.config.validation.verify_stream_count_delta_max:
             reasons.append(f"Unexpected stream count delta: {stream_delta}")
@@ -214,7 +219,13 @@ class OutputValidator:
             notes.append(f"Dropped {len(dropped)} incompatible image subtitle track(s) for Apple-native MP4 output")
         return [], notes
 
-    def _validate_video_timing(self, source: MediaInfo, output: MediaInfo) -> list[str]:
+    def _validate_video_timing(
+        self,
+        source: MediaInfo,
+        output: MediaInfo,
+        *,
+        plan: ExecutionPlan | None = None,
+    ) -> list[str]:
         source_video = source.primary_video
         output_video = output.primary_video
         if source_video is None or output_video is None:
@@ -228,19 +239,30 @@ class OutputValidator:
             tolerance=tolerance,
         )
 
+        source_video_duration = _preferred_stream_duration(source, source_video, "Video") or source.duration
+        output_video_duration = _preferred_stream_duration(output, output_video, "Video") or output.duration
+
         source_fps = _preferred_video_frame_rate(source, source_video)
         output_fps = _preferred_video_frame_rate(output, output_video)
         if source_fps is not None and output_fps is not None:
             fps_delta = abs(source_fps - output_fps)
             allowed_delta = max(0.05, source_fps * 0.005)
-            if fps_delta > allowed_delta:
+            if fps_delta > allowed_delta and not _looks_like_frame_rate_reporting_quirk(
+                source,
+                output,
+                source_video,
+                output_video,
+                source_fps=source_fps,
+                output_fps=output_fps,
+                source_video_duration=source_video_duration,
+                output_video_duration=output_video_duration,
+                tolerance=tolerance,
+            ) and not _plan_copies_primary_video(plan):
                 reasons.append(
                     "Video frame rate changed unexpectedly: "
                     f"source={source_fps:.3f}fps, output={output_fps:.3f}fps"
                 )
 
-        source_video_duration = _preferred_stream_duration(source, source_video, "Video") or source.duration
-        output_video_duration = _preferred_stream_duration(output, output_video, "Video") or output.duration
         if source_video_duration is not None and output_video_duration is not None:
             delta = abs(source_video_duration - output_video_duration)
             if delta > tolerance and not _matches_chapter_tail_timeline(
@@ -298,9 +320,14 @@ class OutputValidator:
                     chapter_tail_duration=chapter_tail_duration,
                     tolerance=tolerance,
                 ):
+                    closest_source_audio_duration = min(
+                        source_audio_durations,
+                        key=lambda duration: abs(output_audio_duration - duration),
+                    )
                     reasons.append(
                         "Output audio duration changed unexpectedly: "
-                        f"track={audio_index}, source={source_audio_duration:.2f}s, output={output_audio_duration:.2f}s"
+                        f"track={audio_index}, source={closest_source_audio_duration:.2f}s, "
+                        f"output={output_audio_duration:.2f}s"
                     )
                 continue
 
@@ -429,8 +456,50 @@ def _title_implies_hi(value: str | None) -> bool:
 
 
 def _normalize_subtitle_language(value: str | None) -> str:
-    normalized = (value or "").strip().lower()
-    return normalized or "und"
+    return normalize_language_code(value)
+
+
+def _expected_output_stream_count(source: MediaInfo, plan: ExecutionPlan | None, config: AppConfig) -> int:
+    dropped_subtitle_indices = set(plan.dropped_subtitle_streams if plan else [])
+    externalized_subtitles = len(plan.external_subtitle_outputs) if plan else 0
+    subtitle_index = 0
+    expected = 0
+
+    for stream in source.streams:
+        if _source_stream_excluded_from_mp4_output(stream, config):
+            continue
+        if stream.is_subtitle:
+            if subtitle_index in dropped_subtitle_indices:
+                subtitle_index += 1
+                continue
+            subtitle_index += 1
+        expected += 1
+
+    expected -= externalized_subtitles
+    if _expects_aac_stereo_fallback(source, config):
+        expected += 1
+    return max(0, expected)
+
+
+def _source_stream_excluded_from_mp4_output(stream, config: AppConfig) -> bool:
+    if config.remux.preferred_container != "mp4":
+        return False
+    if config.remux.keep_attachments:
+        return False
+    return stream.codec_type == "attachment" or stream.is_attached_picture
+
+
+def _expects_aac_stereo_fallback(source: MediaInfo, config: AppConfig) -> bool:
+    if config.remux.preferred_container != "mp4":
+        return False
+    if not config.audio.ensure_aac_fallback_stereo_when_missing:
+        return False
+    if not source.audio_streams:
+        return False
+    return not any(
+        (stream.codec_name or "").lower() == "aac" and (stream.channels or 2) <= 2
+        for stream in source.audio_streams
+    )
 
 
 def _subtitle_titles_equivalent(source_title: str | None, output_title: str | None) -> bool:
@@ -606,15 +675,74 @@ def _looks_like_mp4_video_start_time_quirk(
     )
 
 
-def _looks_like_dv_profile_8_1_ambiguity(
+def _looks_like_frame_rate_reporting_quirk(
+    source: MediaInfo,
+    output: MediaInfo,
+    source_video,
+    output_video,
+    *,
+    source_fps: float,
+    output_fps: float,
+    source_video_duration: float | None,
+    output_video_duration: float | None,
+    tolerance: float,
+) -> bool:
+    if source_video_duration is None or output_video_duration is None:
+        return False
+    if abs(source_video_duration - output_video_duration) > tolerance:
+        return False
+    if (source_video.codec_name or "").lower() != (output_video.codec_name or "").lower():
+        return False
+    if source_video.width != output_video.width or source_video.height != output_video.height:
+        return False
+    lower = min(source_fps, output_fps)
+    upper = max(source_fps, output_fps)
+    if lower <= 0:
+        return False
+    ratio = upper / lower
+    return 1.9 <= ratio <= 2.1
+
+
+def _plan_copies_primary_video(plan: ExecutionPlan | None) -> bool:
+    if plan is None:
+        return False
+    for step in plan.steps:
+        if step.name == "main_ffmpeg":
+            return _command_copies_video(step.command)
+    return False
+
+
+def _command_copies_video(command: list[str]) -> bool:
+    video_codec: str | None = None
+    global_codec: str | None = None
+    video_options = {"-c:v", "-codec:v", "-vcodec"}
+    global_options = {"-c", "-codec"}
+    for index, arg in enumerate(command[:-1]):
+        value = command[index + 1]
+        if arg in video_options or arg.startswith("-c:v:") or arg.startswith("-codec:v:"):
+            video_codec = value
+        elif arg in global_options:
+            global_codec = value
+    selected = video_codec if video_codec is not None else global_codec
+    return (selected or "").lower() == "copy"
+
+
+def _looks_like_dv_profile_8_compatibility_ambiguity(
     source_profile: str,
     output_profile: str,
     source: MediaInfo,
     output: MediaInfo,
 ) -> bool:
-    if source_profile != "8.1" or output_profile != "8.0":
+    if _dv_profile_major(source_profile) != 8 or _dv_profile_major(output_profile) != 8:
         return False
     return FFprobeAnalyzer.detect_hdr10(source) and FFprobeAnalyzer.detect_hdr10(output)
+
+
+def _dv_profile_major(profile: str) -> int | None:
+    match = re.match(r"^f?(\d{1,2})(?:[._]\d{1,2})?$", profile.strip().lower())
+    if not match:
+        return None
+    return int(match.group(1))
 
 
 def _has_other_audio_track_near_video_duration(

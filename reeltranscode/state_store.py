@@ -3,11 +3,20 @@ from __future__ import annotations
 import sqlite3
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from reeltranscode.models import JobStatus
-from reeltranscode.utils import ensure_parent, is_runtime_temp_path, is_transient_media_path, now_utc_iso
+from reeltranscode.utils import (
+    ensure_parent,
+    is_generated_metadata_path,
+    is_runtime_temp_path,
+    is_transient_media_path,
+    now_utc_iso,
+)
+
+RUNTIME_WATCH_STALE_SECONDS = 180.0
 
 
 @dataclass(slots=True)
@@ -15,6 +24,7 @@ class FileRecord:
     path: str
     stream_fp: str | None
     metadata_fp: str | None
+    processing_policy_fp: str | None
     size: int | None
     mtime_ns: int | None
     last_status: str | None
@@ -55,6 +65,7 @@ class StateStore:
                     mtime_ns INTEGER,
                     stream_fp TEXT,
                     metadata_fp TEXT,
+                    processing_policy_fp TEXT,
                     last_status TEXT,
                     last_job_id TEXT,
                     updated_at TEXT NOT NULL
@@ -105,6 +116,8 @@ class StateStore:
                 )
                 """
             )
+            self._ensure_runtime_state_columns()
+            self._ensure_file_state_columns()
             self._conn.execute(
                 """
                 INSERT INTO runtime_state(singleton, watch_running, watch_paused, queued_paths, active_workers, max_workers, updated_at)
@@ -115,10 +128,43 @@ class StateStore:
             )
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
 
+    def _ensure_file_state_columns(self) -> None:
+        rows = self._conn.execute("PRAGMA table_info(files)").fetchall()
+        columns = {str(row["name"]) for row in rows}
+        if "processing_policy_fp" not in columns:
+            self._conn.execute("ALTER TABLE files ADD COLUMN processing_policy_fp TEXT")
+
+    def _ensure_runtime_state_columns(self) -> None:
+        rows = self._conn.execute("PRAGMA table_info(runtime_state)").fetchall()
+        columns = {str(row["name"]) for row in rows}
+        column_specs = {
+            "watch_running": "INTEGER DEFAULT 0",
+            "watch_paused": "INTEGER DEFAULT 0",
+            "queued_paths": "INTEGER DEFAULT 0",
+            "active_workers": "INTEGER DEFAULT 0",
+            "max_workers": "INTEGER DEFAULT 0",
+            "updated_at": "TEXT",
+        }
+        for name, spec in column_specs.items():
+            if name not in columns:
+                self._conn.execute(f"ALTER TABLE runtime_state ADD COLUMN {name} {spec}")
+
+        now = now_utc_iso()
+        self._conn.execute("UPDATE runtime_state SET watch_running=COALESCE(watch_running, 0)")
+        self._conn.execute("UPDATE runtime_state SET watch_paused=COALESCE(watch_paused, 0)")
+        self._conn.execute("UPDATE runtime_state SET queued_paths=COALESCE(queued_paths, 0)")
+        self._conn.execute("UPDATE runtime_state SET active_workers=COALESCE(active_workers, 0)")
+        self._conn.execute("UPDATE runtime_state SET max_workers=COALESCE(max_workers, 0)")
+        self._conn.execute("UPDATE runtime_state SET updated_at=COALESCE(updated_at, ?)", (now,))
+
     def get_file_record(self, path: Path) -> FileRecord | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT path, stream_fp, metadata_fp, size, mtime_ns, last_status, last_job_id FROM files WHERE path=?",
+                """
+                SELECT path, stream_fp, metadata_fp, processing_policy_fp, size, mtime_ns, last_status, last_job_id
+                FROM files
+                WHERE path=?
+                """,
                 (str(path),),
             ).fetchone()
         if not row:
@@ -127,6 +173,7 @@ class StateStore:
             path=row["path"],
             stream_fp=row["stream_fp"],
             metadata_fp=row["metadata_fp"],
+            processing_policy_fp=row["processing_policy_fp"],
             size=row["size"],
             mtime_ns=row["mtime_ns"],
             last_status=row["last_status"],
@@ -390,6 +437,12 @@ class StateStore:
             for row in latest_rows
         ]
         runtime = self.get_runtime_state()
+        updated_age_seconds = _runtime_updated_age_seconds(runtime.updated_at)
+        watch_stale = bool(
+            runtime.watch_running
+            and updated_age_seconds is not None
+            and updated_age_seconds > RUNTIME_WATCH_STALE_SECONDS
+        )
         summary["pending"] = max(summary["pending"], runtime.queued_paths)
         summary["running"] = max(summary["running"], runtime.active_workers)
         return {
@@ -402,6 +455,8 @@ class StateStore:
                 "active_workers": runtime.active_workers,
                 "max_workers": runtime.max_workers,
                 "updated_at": runtime.updated_at,
+                "updated_age_seconds": updated_age_seconds,
+                "watch_stale": watch_stale,
             },
         }
 
@@ -416,12 +471,13 @@ class StateStore:
         metadata_fp: str,
         status: JobStatus,
         job_id: str,
+        processing_policy_fp: str | None = None,
     ) -> None:
         with self._lock, self._conn:
             self._conn.execute(
                 """
-                INSERT INTO files(path, device, inode, size, mtime_ns, stream_fp, metadata_fp, last_status, last_job_id, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO files(path, device, inode, size, mtime_ns, stream_fp, metadata_fp, processing_policy_fp, last_status, last_job_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     device=excluded.device,
                     inode=excluded.inode,
@@ -429,6 +485,7 @@ class StateStore:
                     mtime_ns=excluded.mtime_ns,
                     stream_fp=excluded.stream_fp,
                     metadata_fp=excluded.metadata_fp,
+                    processing_policy_fp=excluded.processing_policy_fp,
                     last_status=excluded.last_status,
                     last_job_id=excluded.last_job_id,
                     updated_at=excluded.updated_at
@@ -441,6 +498,7 @@ class StateStore:
                     mtime_ns,
                     stream_fp,
                     metadata_fp,
+                    processing_policy_fp,
                     status.value,
                     job_id,
                     now_utc_iso(),
@@ -466,4 +524,19 @@ def _include_status_source_path(source_path: str) -> bool:
         return False
     if is_transient_media_path(path):
         return False
+    if is_generated_metadata_path(path):
+        return False
     return True
+
+
+def _runtime_updated_age_seconds(updated_at: str) -> float | None:
+    if not updated_at:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)
+    return max(0.0, age.total_seconds())

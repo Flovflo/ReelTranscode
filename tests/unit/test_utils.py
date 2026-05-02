@@ -4,7 +4,7 @@ import errno
 import os
 from pathlib import Path
 
-from reeltranscode.utils import atomic_replace
+from reeltranscode.utils import atomic_replace, is_generated_metadata_path, is_media_file
 
 
 def test_atomic_replace_stages_cross_device_publish_on_destination_volume(tmp_path: Path, monkeypatch):
@@ -30,3 +30,21 @@ def test_atomic_replace_stages_cross_device_publish_on_destination_volume(tmp_pa
     assert dst.read_bytes() == b"movie"
     assert not src.exists()
     assert not list(dst.parent.glob(".dst.mp4.*.publish"))
+
+
+def test_generated_metadata_paths_are_not_media_candidates(tmp_path: Path):
+    media = tmp_path / "Show" / "S01" / ".@__thumb" / "s100S01E01.avi"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"thumbnail")
+
+    assert is_generated_metadata_path(media) is True
+    assert is_media_file(media, {".avi"}) is False
+
+
+def test_generated_metadata_paths_are_case_insensitive(tmp_path: Path):
+    media = tmp_path / "Show" / "@eaDir" / "episode.mkv"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"metadata")
+
+    assert is_generated_metadata_path(media) is True
+    assert is_media_file(media, {".mkv"}) is False

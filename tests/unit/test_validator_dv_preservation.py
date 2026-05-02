@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from reeltranscode.config import AppConfig
-from reeltranscode.models import CaseLabel, Decision, ExecutionPlan, MediaInfo, StreamInfo, Strategy
+from reeltranscode.models import CaseLabel, CommandStep, Decision, ExecutionPlan, MediaInfo, StreamInfo, Strategy
 from reeltranscode.validator import OutputValidator
 
 
@@ -13,6 +13,7 @@ def _media(
     *,
     has_dv: bool,
     codec_tag: str | None,
+    dv_compatibility_id: int = 1,
     raw_mediainfo: dict | None = None,
     raw_probe: dict | None = None,
 ) -> MediaInfo:
@@ -22,7 +23,7 @@ def _media(
             {
                 "side_data_type": "DOVI configuration record",
                 "dv_profile": 8,
-                "dv_bl_signal_compatibility_id": 1,
+                "dv_bl_signal_compatibility_id": dv_compatibility_id,
             }
         )
 
@@ -165,6 +166,57 @@ def test_validator_accepts_ambiguous_dv_8_1_report_when_hdr10_signaling_is_prese
 
     assert result.ok is True
     assert not any("Dolby Vision profile changed" in reason for reason in result.reasons)
+
+
+def test_validator_accepts_dv_profile_8_compatibility_reporting_when_hdr10_is_preserved():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(
+        Path("/tmp/source.mkv"),
+        "matroska,webm",
+        has_dv=True,
+        codec_tag=None,
+        dv_compatibility_id=6,
+    )
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=True,
+        codec_tag="hvc1",
+        dv_compatibility_id=1,
+    )
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Dolby Vision profile changed" in reason for reason in result.reasons)
+    assert any("profile 8 compatibility reporting changed" in note for note in result.notes)
+
+
+def test_validator_rejects_dv_profile_8_compatibility_change_when_hdr10_is_lost():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(
+        Path("/tmp/source.mkv"),
+        "matroska,webm",
+        has_dv=True,
+        codec_tag=None,
+        dv_compatibility_id=6,
+    )
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=True,
+        codec_tag="hvc1",
+        dv_compatibility_id=1,
+    )
+    output.streams[0].color_transfer = "bt709"
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is False
+    assert any("Dolby Vision profile changed" in reason for reason in result.reasons)
+    assert any("HDR10 signaling lost" in reason for reason in result.reasons)
 
 
 def test_validator_accepts_dvh1_tag_when_dolby_vision_is_preserved():
@@ -342,6 +394,65 @@ def test_validator_rejects_video_timing_mismatch_even_when_container_duration_ma
     assert any("Output audio/video duration mismatch" in reason for reason in result.reasons)
 
 
+def test_validator_accepts_frame_rate_reporting_delta_for_video_copy_plan():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(Path("/tmp/source.mkv"), "matroska,webm", has_dv=False, codec_tag=None)
+    source.streams[0].avg_frame_rate = "24000/1001"
+    source.streams[0].duration = 1420.0
+    source.duration = 1420.0
+
+    output = _media(Path("/tmp/output.mp4"), "mov,mp4,m4a,3gp,3g2,mj2", has_dv=False, codec_tag="hvc1")
+    output.streams[0].avg_frame_rate = "28068/1000"
+    output.streams[0].duration = 1420.0
+    output.duration = 1420.0
+
+    plan = ExecutionPlan(
+        source_path=source.path,
+        target_path=output.path,
+        temp_path=output.path,
+        workspace_dir=None,
+        strategy=Strategy.SUBTITLE_ONLY,
+        case_label=CaseLabel.D,
+        steps=[
+            CommandStep(
+                name="main_ffmpeg",
+                command=["ffmpeg", "-i", str(source.path), "-c:v", "copy", str(output.path)],
+                expected_outputs=[output.path],
+            )
+        ],
+    )
+
+    result = validator.validate(source, output, _decision(), plan=plan)
+
+    assert result.ok is True
+    assert not any("Video frame rate changed unexpectedly" in reason for reason in result.reasons)
+
+
+def test_validator_accepts_half_rate_reporting_quirk_when_duration_is_preserved():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(Path("/tmp/source.mkv"), "matroska,webm", has_dv=False, codec_tag=None)
+    source.streams[0].avg_frame_rate = "11905/1000"
+    source.streams[0].duration = 3532.949
+    source.duration = 3532.949
+
+    output = _media(
+        Path("/tmp/output.mp4"),
+        "mov,mp4,m4a,3gp,3g2,mj2",
+        has_dv=False,
+        codec_tag="hvc1",
+    )
+    output.streams[0].avg_frame_rate = "24000/1001"
+    output.streams[0].duration = 3532.949
+    output.duration = 3532.949
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Video frame rate changed unexpectedly" in reason for reason in result.reasons)
+
+
 def test_validator_rejects_audio_video_start_time_drift():
     cfg = AppConfig.from_dict({})
     validator = OutputValidator(cfg)
@@ -475,6 +586,102 @@ def test_validator_accepts_dropped_image_subtitles_when_plan_declares_them():
 
     assert result.ok is True
     assert any("Dropped 1 incompatible image subtitle track" in note for note in result.notes)
+
+
+def test_validator_accepts_modern_iso_language_aliases_for_mp4_subtitles():
+    cfg = AppConfig.from_dict({})
+    validator = OutputValidator(cfg)
+    source = _media(Path("/tmp/source.mkv"), "matroska,webm", has_dv=False, codec_tag=None)
+    source.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "disposition": {"default": 0},
+                "tags": {"language": "cze"},
+            }
+        )
+    )
+    source.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 3,
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "disposition": {"default": 0},
+                "tags": {"language": "chi"},
+            }
+        )
+    )
+
+    output = _media(Path("/tmp/output.mp4"), "mov,mp4,m4a,3gp,3g2,mj2", has_dv=False, codec_tag="hvc1")
+    output.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "subtitle",
+                "codec_name": "mov_text",
+                "codec_tag_string": "tx3g",
+                "disposition": {"default": 0},
+                "tags": {"language": "ces"},
+            }
+        )
+    )
+    output.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 3,
+                "codec_type": "subtitle",
+                "codec_name": "mov_text",
+                "codec_tag_string": "tx3g",
+                "disposition": {"default": 0},
+                "tags": {"language": "zho"},
+            }
+        )
+    )
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("language changed" in reason for reason in result.reasons)
+
+
+def test_validator_stream_count_ignores_mp4_attachment_removal_and_aac_fallback():
+    cfg = AppConfig.from_dict({"remux": {"preferred_container": "mp4", "keep_attachments": False}})
+    validator = OutputValidator(cfg)
+    source = _media(Path("/tmp/source.mkv"), "matroska,webm", has_dv=False, codec_tag=None)
+    for attachment_index in range(2, 12):
+        source.streams.append(
+            StreamInfo.from_probe(
+                {
+                    "index": attachment_index,
+                    "codec_type": "attachment",
+                    "codec_name": "ttf",
+                }
+            )
+        )
+
+    output = _media(Path("/tmp/output.mp4"), "mov,mp4,m4a,3gp,3g2,mj2", has_dv=False, codec_tag="hvc1")
+    output.streams.append(
+        StreamInfo.from_probe(
+            {
+                "index": 2,
+                "codec_type": "audio",
+                "codec_name": "aac",
+                "codec_tag_string": "mp4a",
+                "channels": 2,
+                "channel_layout": "stereo",
+                "disposition": {"default": 0},
+                "tags": {"language": "fra", "title": "AAC Stereo Fallback"},
+            }
+        )
+    )
+
+    result = validator.validate(source, output, _decision())
+
+    assert result.ok is True
+    assert not any("Unexpected stream count delta" in reason for reason in result.reasons)
 
 
 def test_validator_uses_source_stream_duration_tags_as_expected_timeline():

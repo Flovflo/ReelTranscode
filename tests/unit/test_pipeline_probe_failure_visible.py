@@ -14,6 +14,11 @@ class _FailingAnalyzer:
         raise ProbeError("ffprobe missing dylib")
 
 
+class _UnexpectedAnalyzer:
+    def analyze(self, path: Path):
+        raise ValueError("unexpected tool output")
+
+
 def test_probe_failure_is_persisted_in_status_snapshot(tmp_path):
     cfg = AppConfig.from_dict(
         {
@@ -45,6 +50,7 @@ def test_probe_failure_is_persisted_in_status_snapshot(tmp_path):
     try:
         report = processor.process_path(source, source.parent, dry_run_override=False)
         snapshot = state.status_snapshot(limit=20)
+        record = state.get_file_record(source)
     finally:
         state.close()
 
@@ -53,6 +59,94 @@ def test_probe_failure_is_persisted_in_status_snapshot(tmp_path):
     assert snapshot["summary"]["total"] == 1
     assert snapshot["summary"]["failed"] == 1
     assert snapshot["latest_jobs"][0]["source_path"] == str(source)
+    assert record is not None
+    assert record.last_status == "failed"
+    assert record.stream_fp == "analysis-failed:ProbeError"
+
+
+def test_unexpected_processing_error_is_persisted_in_status_snapshot(tmp_path):
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {"folders": [str(tmp_path / "watch")]},
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+            "output": {
+                "mode": "keep_original",
+                "output_root": str(tmp_path / "out"),
+                "archive_root": str(tmp_path / "archive"),
+                "overwrite": True,
+            },
+        }
+    )
+
+    source = tmp_path / "watch" / "weird.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"fake")
+
+    state = StateStore(cfg.paths.state_db)
+    reporter = Reporter(cfg)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=reporter)
+    processor.analyzer = _UnexpectedAnalyzer()
+
+    try:
+        report = processor.process_path(source, source.parent, dry_run_override=False)
+        snapshot = state.status_snapshot(limit=20)
+    finally:
+        state.close()
+
+    assert report.status == "failed"
+    assert report.error_class == "ValueError"
+    assert snapshot["summary"]["total"] == 1
+    assert snapshot["summary"]["failed"] == 1
+    assert snapshot["latest_jobs"][0]["error_class"] == "ValueError"
+
+
+def test_zero_byte_source_is_skipped_without_probe_failure(tmp_path):
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {"folders": [str(tmp_path / "watch")]},
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+            "output": {
+                "mode": "keep_original",
+                "output_root": str(tmp_path / "out"),
+                "archive_root": str(tmp_path / "archive"),
+                "overwrite": True,
+            },
+        }
+    )
+
+    source = tmp_path / "watch" / "empty.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"")
+
+    state = StateStore(cfg.paths.state_db)
+    reporter = Reporter(cfg)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=reporter)
+    processor.analyzer = _FailingAnalyzer()
+
+    try:
+        report = processor.process_path(source, source.parent, dry_run_override=False)
+        snapshot = state.status_snapshot(limit=20)
+        record = state.get_file_record(source)
+    finally:
+        state.close()
+
+    assert report.status == "skipped"
+    assert report.case_label == "EMPTY_SOURCE"
+    assert report.error_class is None
+    assert snapshot["summary"]["failed"] == 0
+    assert snapshot["summary"]["skipped"] == 1
+    assert record is not None
+    assert record.last_status == "skipped"
 
 
 def test_missing_source_file_is_persisted_in_status_snapshot(tmp_path):

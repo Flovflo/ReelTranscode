@@ -1,25 +1,39 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from reeltranscode.utils import is_runtime_temp_path, is_transient_media_path, path_contains, paths_overlap
+from reeltranscode.utils import (
+    is_generated_metadata_path,
+    is_runtime_temp_path,
+    is_transient_media_path,
+    path_contains,
+    paths_overlap,
+)
 
 
 @dataclass(slots=True)
 class WatchConfig:
     folders: list[Path] = field(default_factory=list)
+    priority_folders: list[Path] = field(default_factory=list)
     recursive: bool = True
+    use_filesystem_events: bool = False
     allowed_extensions: set[str] = field(
-        default_factory=lambda: {".mkv", ".mp4", ".mov", ".m4v", ".ts", ".m2ts"}
+        default_factory=lambda: {".mkv", ".mp4", ".mov", ".m4v", ".ts", ".m2ts", ".avi"}
+    )
+    priority_extensions: set[str] = field(
+        default_factory=lambda: {".mkv", ".mov", ".m4v", ".ts", ".m2ts", ".avi"}
     )
     stable_wait_seconds: int = 30
     stable_checks: int = 3
     poll_interval_seconds: int = 5
+    rescan_interval_seconds: int = 300
 
 
 @dataclass(slots=True)
@@ -64,6 +78,11 @@ class VideoPolicy:
     preferred_codec: str = "hevc"
     fallback_codec: str = "h264"
     force_cfr: bool = False
+    hardware_encoder: str = "auto"
+    encoder_threads: int = 0
+    videotoolbox_bitrate_multiplier: float = 1.0
+    videotoolbox_min_bitrate_kbps: int = 2500
+    videotoolbox_max_bitrate_kbps: int = 80000
     keyframe_interval_seconds: int = 2
     hevc_tag: str = "hvc1"
     max_4k_fps: int = 60
@@ -99,6 +118,8 @@ class PathsConfig:
     reports_dir: Path = Path("./reports")
     csv_summary: Path = Path("./reports/summary.csv")
     temp_dir: Path = Path("./tmp")
+    temp_dir_strategy: str = "source_first"
+    temp_dir_overrides: dict[Path, Path] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -164,11 +185,17 @@ class AppConfig:
         watch_raw = raw.get("watch", {})
         watch = WatchConfig(
             folders=[Path(p).expanduser() for p in watch_raw.get("folders", [])],
+            priority_folders=[Path(p).expanduser() for p in watch_raw.get("priority_folders", [])],
             recursive=bool(watch_raw.get("recursive", True)),
+            use_filesystem_events=bool(watch_raw.get("use_filesystem_events", False)),
             allowed_extensions={e.lower() for e in watch_raw.get("allowed_extensions", WatchConfig().allowed_extensions)},
+            priority_extensions={
+                e.lower() for e in watch_raw.get("priority_extensions", WatchConfig().priority_extensions)
+            },
             stable_wait_seconds=int(watch_raw.get("stable_wait_seconds", 30)),
             stable_checks=int(watch_raw.get("stable_checks", 3)),
             poll_interval_seconds=int(watch_raw.get("poll_interval_seconds", 5)),
+            rescan_interval_seconds=int(watch_raw.get("rescan_interval_seconds", 300)),
         )
 
         remux_raw = raw.get("remux", {})
@@ -215,6 +242,11 @@ class AppConfig:
             preferred_codec=str(video_raw.get("preferred_codec", "hevc")),
             fallback_codec=str(video_raw.get("fallback_codec", "h264")),
             force_cfr=bool(video_raw.get("force_cfr", False)),
+            hardware_encoder=str(video_raw.get("hardware_encoder", "auto")).strip().lower(),
+            encoder_threads=int(video_raw.get("encoder_threads", 0)),
+            videotoolbox_bitrate_multiplier=float(video_raw.get("videotoolbox_bitrate_multiplier", 1.0)),
+            videotoolbox_min_bitrate_kbps=int(video_raw.get("videotoolbox_min_bitrate_kbps", 2500)),
+            videotoolbox_max_bitrate_kbps=int(video_raw.get("videotoolbox_max_bitrate_kbps", 80000)),
             keyframe_interval_seconds=int(video_raw.get("keyframe_interval_seconds", 2)),
             hevc_tag=str(video_raw.get("hevc_tag", "hvc1")),
             max_4k_fps=int(video_raw.get("max_4k_fps", 60)),
@@ -255,6 +287,11 @@ class AppConfig:
             reports_dir=_path(paths_raw.get("reports_dir"), Path("./reports")),
             csv_summary=_path(paths_raw.get("csv_summary"), Path("./reports/summary.csv")),
             temp_dir=_path(paths_raw.get("temp_dir"), Path("./tmp")),
+            temp_dir_strategy=str(paths_raw.get("temp_dir_strategy", "source_first")),
+            temp_dir_overrides={
+                Path(source_root).expanduser(): Path(temp_root).expanduser()
+                for source_root, temp_root in dict(paths_raw.get("temp_dir_overrides", {})).items()
+            },
         )
 
         tooling_raw = raw.get("tooling", {})
@@ -302,8 +339,35 @@ class AppConfig:
         """Serialize config with normalized JSON/YAML-friendly values."""
         return _serialize_value(asdict(self))
 
+    def processing_policy_fingerprint(self) -> str:
+        """Fingerprint settings and tool identities that can change processing outcomes."""
+        normalized = self.to_dict()
+        payload = {
+            # Bump when planner/validator semantics change so unchanged failed files
+            # are eligible for a safe retry on the next watcher seed scan.
+            "revision": 3,
+            "remux": normalized["remux"],
+            "audio": normalized["audio"],
+            "subtitles": normalized["subtitles"],
+            "dolby_vision": normalized["dolby_vision"],
+            "video": normalized["video"],
+            "output": normalized["output"],
+            "validation": normalized["validation"],
+            "tooling": normalized["tooling"],
+            "tool_identities": {
+                name: _tool_identity(value)
+                for name, value in normalized["tooling"].items()
+                if value
+            },
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return "policy:" + hashlib.sha256(encoded).hexdigest()[:16]
+
     def watch_roots(self) -> list[Path]:
         return [path.expanduser().resolve() for path in self.watch.folders]
+
+    def priority_watch_roots(self) -> list[Path]:
+        return [path.expanduser().resolve() for path in self.watch.priority_folders]
 
     def resolved_watch_root_for(self, path: Path, source_root: Path | None = None) -> Path | None:
         if source_root is not None:
@@ -311,7 +375,7 @@ class AppConfig:
 
         candidate = path.expanduser().resolve()
         best = None
-        for root in self.watch_roots():
+        for root in [*self.watch_roots(), *self.priority_watch_roots()]:
             if path_contains(root, candidate):
                 if best is None or len(root.parts) > len(best.parts):
                     best = root
@@ -344,16 +408,34 @@ class AppConfig:
             "output.archive_root": self.output.archive_root.expanduser().resolve(),
             "paths.temp_dir": self.paths.temp_dir.expanduser().resolve(),
         }
+        for source_root, temp_root in self.paths.temp_dir_overrides.items():
+            managed[f"paths.temp_dir_overrides[{source_root.expanduser().resolve()}]"] = temp_root.expanduser().resolve()
         for source_root, target_root in self.output.output_root_overrides.items():
             managed[f"output.output_root_overrides[{source_root.expanduser().resolve()}]"] = (
                 target_root.expanduser().resolve()
             )
         return managed
 
-    def is_excluded_from_watch(self, path: Path) -> bool:
+    def temp_dir_for(self, source: Path, source_root: Path | None = None) -> Path:
+        resolved_source_root = self.resolved_watch_root_for(source, source_root)
+        resolved_overrides = {
+            watch_root.expanduser().resolve(): temp_root.expanduser().resolve()
+            for watch_root, temp_root in self.paths.temp_dir_overrides.items()
+        }
+        if resolved_source_root is not None and resolved_source_root in resolved_overrides:
+            return resolved_overrides[resolved_source_root]
+        return self.paths.temp_dir.expanduser().resolve()
+
+    def is_excluded_from_watch(self, path: Path, *, allow_managed_paths: bool = False) -> bool:
         candidate = path.expanduser().resolve()
-        if is_runtime_temp_path(candidate) or is_transient_media_path(candidate):
+        if (
+            is_runtime_temp_path(candidate)
+            or is_transient_media_path(candidate)
+            or is_generated_metadata_path(candidate)
+        ):
             return True
+        if allow_managed_paths:
+            return False
         for protected_path in self.managed_paths().values():
             if path_contains(protected_path, candidate):
                 return True
@@ -375,6 +457,8 @@ class AppConfig:
             _error("watch.poll_interval_seconds", "must be >= 1")
         if self.watch.stable_wait_seconds < 1:
             _error("watch.stable_wait_seconds", "must be >= 1")
+        if self.watch.rescan_interval_seconds < 0:
+            _error("watch.rescan_interval_seconds", "must be >= 0")
 
         allowed_modes = {"keep_original", "archive_original", "replace_original"}
         if self.output.mode not in allowed_modes:
@@ -388,6 +472,16 @@ class AppConfig:
             _error("audio.max_channels", "must be >= 1")
         if self.video.max_4k_fps < 1:
             _error("video.max_4k_fps", "must be >= 1")
+        if self.video.hardware_encoder not in {"auto", "software", "videotoolbox"}:
+            _error("video.hardware_encoder", "must be one of ['auto', 'software', 'videotoolbox']")
+        if self.video.encoder_threads < 0:
+            _error("video.encoder_threads", "must be >= 0")
+        if self.video.videotoolbox_bitrate_multiplier <= 0:
+            _error("video.videotoolbox_bitrate_multiplier", "must be > 0")
+        if self.video.videotoolbox_min_bitrate_kbps < 1:
+            _error("video.videotoolbox_min_bitrate_kbps", "must be >= 1")
+        if self.video.videotoolbox_max_bitrate_kbps < self.video.videotoolbox_min_bitrate_kbps:
+            _error("video.videotoolbox_max_bitrate_kbps", "must be >= video.videotoolbox_min_bitrate_kbps")
         if self.video.keyframe_interval_seconds < 1:
             _error("video.keyframe_interval_seconds", "must be >= 1")
         if self.video.hevc_tag.lower() not in {"hev1", "hvc1"}:
@@ -397,6 +491,8 @@ class AppConfig:
             _error("validation.verify_duration_tolerance_seconds", "must be >= 0")
         if self.validation.verify_stream_count_delta_max < 0:
             _error("validation.verify_stream_count_delta_max", "must be >= 0")
+        if self.paths.temp_dir_strategy not in {"source_first", "configured_first"}:
+            _error("paths.temp_dir_strategy", "must be one of ['configured_first', 'source_first']")
 
         if not self.tooling.ffmpeg_bin.strip():
             _error("tooling.ffmpeg_bin", "must not be empty")
@@ -439,6 +535,12 @@ class AppConfig:
             for ext in sorted(self.watch.allowed_extensions):
                 if not ext.startswith("."):
                     _error("watch.allowed_extensions", f"extension must start with '.': {ext}")
+        if not self.watch.priority_extensions:
+            _error("watch.priority_extensions", "must contain at least one extension")
+        else:
+            for ext in sorted(self.watch.priority_extensions):
+                if not ext.startswith("."):
+                    _error("watch.priority_extensions", f"extension must start with '.': {ext}")
 
         for watch_root in self.watch_roots():
             for field, managed_path in self.managed_paths().items():
@@ -452,25 +554,45 @@ class AppConfig:
                         f"must not overlap managed path {field}: {watch_root}",
                     )
 
-        watch_roots = set(self.watch_roots())
+        for priority_root in self.priority_watch_roots():
+            for field, managed_path in self.managed_paths().items():
+                if field.startswith("output.output_root"):
+                    continue
+                if paths_overlap(priority_root, managed_path):
+                    _error(
+                        "watch.priority_folders",
+                        f"must not overlap managed path {field}: {priority_root}",
+                    )
+
+        process_roots = {*self.watch_roots(), *self.priority_watch_roots()}
         for source_root in sorted(
             (path.expanduser().resolve() for path in self.output.output_root_overrides),
             key=str,
         ):
-            if source_root not in watch_roots:
+            if source_root not in process_roots:
                 _error(
                     "output.output_root_overrides",
-                    f"override source root must exactly match a configured watch folder: {source_root}",
+                    f"override source root must exactly match a configured watch or priority folder: {source_root}",
                 )
 
         for delete_root in sorted(
             (path.expanduser().resolve() for path in self.output.delete_original_after_success_roots),
             key=str,
         ):
-            if delete_root not in watch_roots:
+            if delete_root not in process_roots:
                 _error(
                     "output.delete_original_after_success_roots",
-                    f"delete root must exactly match a configured watch folder: {delete_root}",
+                    f"delete root must exactly match a configured watch or priority folder: {delete_root}",
+                )
+
+        for source_root in sorted(
+            (path.expanduser().resolve() for path in self.paths.temp_dir_overrides),
+            key=str,
+        ):
+            if source_root not in process_roots:
+                _error(
+                    "paths.temp_dir_overrides",
+                    f"override source root must exactly match a configured watch or priority folder: {source_root}",
                 )
 
         return errors
@@ -488,3 +610,19 @@ def _serialize_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _serialize_value(v) for k, v in value.items()}
     return value
+
+
+def _tool_identity(value: Any) -> dict[str, Any]:
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        return {"path": str(value), "absolute": False}
+    try:
+        stat = path.stat()
+    except OSError:
+        return {"path": str(path), "exists": False}
+    return {
+        "path": str(path),
+        "exists": True,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }

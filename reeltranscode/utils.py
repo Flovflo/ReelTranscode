@@ -16,6 +16,17 @@ if TYPE_CHECKING:
 
 RUNTIME_TEMP_DIRNAME = ".reeltranscode-tmp"
 TRANSIENT_MEDIA_MARKERS = (".tmp.", ".part.", ".partial.")
+GENERATED_METADATA_PATH_PARTS = frozenset(
+    {
+        ".@__thumb",
+        ".appledouble",
+        ".temporaryitems",
+        ".trashes",
+        "@eadir",
+        "@recycle",
+        "#recycle",
+    }
+)
 
 
 @dataclass(slots=True)
@@ -61,12 +72,21 @@ def is_transient_media_path(path: Path) -> bool:
     return any(marker in name for marker in TRANSIENT_MEDIA_MARKERS)
 
 
+def is_generated_metadata_path(path: Path) -> bool:
+    try:
+        candidate = path.expanduser().resolve()
+    except OSError:
+        candidate = path.expanduser()
+    return any(part.lower() in GENERATED_METADATA_PATH_PARTS for part in candidate.parts)
+
+
 def is_media_file(path: Path, allowed_extensions: set[str]) -> bool:
     return (
         path.is_file()
         and path.suffix.lower() in allowed_extensions
         and not is_runtime_temp_path(path)
         and not is_transient_media_path(path)
+        and not is_generated_metadata_path(path)
     )
 
 

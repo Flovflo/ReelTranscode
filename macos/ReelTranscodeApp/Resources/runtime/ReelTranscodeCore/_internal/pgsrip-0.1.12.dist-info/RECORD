@@ -1,9 +1,8 @@
-../../../bin/pgsrip,sha256=xZEaJ1ceCBuvuTo2dZcl-CeHZO1SEap93g_TuJhdCl0,211
+../../../bin/pgsrip,sha256=0jw7AklXj26KGt_WwdMiXt1S2JaDPzr12yFLGAtzKxo,203
 pgsrip-0.1.12.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
 pgsrip-0.1.12.dist-info/LICENSE,sha256=116qGmAOrzfZifG5_K6qJB51ULDcFZc62dpD7hHPoBk,1070
 pgsrip-0.1.12.dist-info/METADATA,sha256=9gcDTwkKaoBzdqftt2zX1TmWFYjMa4Jsqj4lyh0EXs0,4311
 pgsrip-0.1.12.dist-info/RECORD,,
-pgsrip-0.1.12.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
 pgsrip-0.1.12.dist-info/WHEEL,sha256=b4K_helf-jlQoXBBETfwnf4B04YC67LOev0jo4fX5m8,88
 pgsrip-0.1.12.dist-info/entry_points.txt,sha256=wI4bMnzDrcW_7kWUY1dPKv6V_Bh5bfZhq7B3fJyigm8,44
 pgsrip/__init__.py,sha256=gcguDbWqpjnEP-thNxb0gbLXIHV_u68oMj-I1AV1ulw,522

@@ -83,6 +83,49 @@ video:
     assert {"field": "video.hevc_tag", "message": "must be one of ['hvc1', 'hev1']"} in payload["errors"]
 
 
+def test_config_validate_rejects_invalid_video_hardware_encoder(tmp_path: Path, capsys):
+    config_path = tmp_path / "bad_hardware_encoder.yaml"
+    config_path.write_text(
+        """
+video:
+  hardware_encoder: cuda
+""".strip(),
+        encoding="utf-8",
+    )
+
+    _run_config_validate(config_path, json_output=True)
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+
+    assert payload["valid"] is False
+    assert {
+        "field": "video.hardware_encoder",
+        "message": "must be one of ['auto', 'software', 'videotoolbox']",
+    } in payload["errors"]
+
+
+def test_config_validate_rejects_invalid_videotoolbox_bitrate_bounds(tmp_path: Path, capsys):
+    config_path = tmp_path / "bad_videotoolbox_bitrate.yaml"
+    config_path.write_text(
+        """
+video:
+  videotoolbox_min_bitrate_kbps: 9000
+  videotoolbox_max_bitrate_kbps: 8000
+""".strip(),
+        encoding="utf-8",
+    )
+
+    _run_config_validate(config_path, json_output=True)
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+
+    assert payload["valid"] is False
+    assert {
+        "field": "video.videotoolbox_max_bitrate_kbps",
+        "message": "must be >= video.videotoolbox_min_bitrate_kbps",
+    } in payload["errors"]
+
+
 def test_config_validate_rejects_watch_overlap_with_managed_paths(tmp_path: Path, capsys):
     watch_root = tmp_path / "media"
     config_path = tmp_path / "overlap.yaml"
@@ -107,6 +150,36 @@ paths:
     assert {
         "field": "output.output_root",
         "message": f"must not overlap any watch folder: {(watch_root / 'optimized').resolve()}",
+    } in payload["errors"]
+
+
+def test_config_validate_rejects_temp_dir_override_for_non_watch_root(tmp_path: Path, capsys):
+    watch_root = tmp_path / "media"
+    other_root = tmp_path / "other"
+    temp_root = tmp_path / "speedy-boy"
+    config_path = tmp_path / "temp-override.yaml"
+    config_path.write_text(
+        f"""
+watch:
+  folders:
+    - {watch_root}
+paths:
+  temp_dir: {tmp_path / "tmp"}
+  temp_dir_strategy: configured_first
+  temp_dir_overrides:
+    {other_root}: {temp_root}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    _run_config_validate(config_path, json_output=True)
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+
+    assert payload["valid"] is False
+    assert {
+        "field": "paths.temp_dir_overrides",
+        "message": f"override source root must exactly match a configured watch or priority folder: {other_root.resolve()}",
     } in payload["errors"]
 
 
@@ -157,6 +230,8 @@ def test_status_json_contract(tmp_path: Path, capsys):
         assert payload["runtime"]["queued_paths"] == 3
         assert payload["runtime"]["active_workers"] == 1
         assert payload["runtime"]["max_workers"] == 4
+        assert payload["runtime"]["watch_stale"] is False
+        assert payload["runtime"]["updated_age_seconds"] >= 0
         assert "capabilities" in payload
     finally:
         state.close()
@@ -171,6 +246,52 @@ def test_runtime_pause_state_is_persisted(tmp_path: Path):
         assert state.is_watch_paused() is True
         state.set_watch_paused(False)
         assert state.is_watch_paused() is False
+    finally:
+        state.close()
+
+
+def test_runtime_state_migrates_legacy_missing_metrics(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE runtime_state (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                watch_running INTEGER
+            )
+            """
+        )
+        conn.execute("INSERT INTO runtime_state(singleton, watch_running) VALUES (1, 1)")
+
+    state = StateStore(db_path)
+    try:
+        runtime = state.get_runtime_state()
+        assert runtime.watch_running is True
+        assert runtime.watch_paused is False
+        assert runtime.queued_paths == 0
+        assert runtime.active_workers == 0
+        assert runtime.max_workers == 0
+        assert runtime.updated_at
+    finally:
+        state.close()
+
+
+def test_status_snapshot_marks_running_watcher_stale_when_heartbeat_is_old(tmp_path: Path):
+    cfg = AppConfig.from_dict({"paths": {"state_db": str(tmp_path / "state.db")}})
+    state = StateStore(cfg.paths.state_db)
+    try:
+        state.update_runtime_state(watch_running=True, queued_paths=2, active_workers=1, max_workers=2)
+        with state._lock, state._conn:
+            state._conn.execute(
+                "UPDATE runtime_state SET updated_at=? WHERE singleton=1",
+                ("2000-01-01T00:00:00+00:00",),
+            )
+
+        snapshot = state.status_snapshot(limit=10)
+
+        assert snapshot["runtime"]["watch_running"] is True
+        assert snapshot["runtime"]["watch_stale"] is True
+        assert snapshot["runtime"]["updated_age_seconds"] > 180
     finally:
         state.close()
 
@@ -310,6 +431,37 @@ def test_status_snapshot_ignores_transient_hidden_media_sources(tmp_path: Path):
             status=JobStatus.FAILED,
             error_class="RuntimeError",
             error_message="temporary file should be hidden from status",
+            report_path=None,
+        )
+
+        snapshot = state.status_snapshot(limit=10)
+
+        assert snapshot["summary"]["total"] == 0
+        assert snapshot["summary"]["failed"] == 0
+        assert snapshot["latest_jobs"] == []
+    finally:
+        state.close()
+
+
+def test_status_snapshot_ignores_generated_thumbnail_sources(tmp_path: Path):
+    cfg = AppConfig.from_dict({"paths": {"state_db": str(tmp_path / "state.db")}})
+    state = StateStore(cfg.paths.state_db)
+    thumbnail_source = tmp_path / "Show" / "S01" / ".@__thumb" / "s100S01E01.avi"
+    try:
+        state.mark_job_started(
+            job_id="thumbnail-job",
+            source_path=thumbnail_source,
+            target_path=tmp_path / "thumb.mp4",
+            strategy="full_pipeline",
+            case_label="E_VIDEO_INCOMPATIBLE",
+            stream_fp="stream-fp",
+            metadata_fp="meta-fp",
+        )
+        state.mark_job_finished(
+            job_id="thumbnail-job",
+            status=JobStatus.FAILED,
+            error_class="ProbeError",
+            error_message="metadata thumbnail should be hidden from status",
             report_path=None,
         )
 

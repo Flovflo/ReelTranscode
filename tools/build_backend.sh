@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 PYINSTALLER_WORKDIR="$ROOT_DIR/build/pyinstaller/work"
 PYINSTALLER_SPECDIR="$ROOT_DIR/build/pyinstaller/spec"
 PYINSTALLER_DISTDIR="$ROOT_DIR/dist"
+export PYINSTALLER_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-$ROOT_DIR/build/pyinstaller/config}"
 
 PYINSTALLER_BIN="${PYINSTALLER_BIN:-}"
 if [[ -z "$PYINSTALLER_BIN" ]]; then

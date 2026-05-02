@@ -16,6 +16,7 @@ from reeltranscode.models import (
     Strategy,
 )
 from reeltranscode.pipeline import PipelineProcessor
+from reeltranscode.process_registry import ShutdownRequestedError
 from reeltranscode.reporter import Reporter
 from reeltranscode.state_store import StateStore
 from reeltranscode.utils import PublishResult
@@ -131,6 +132,19 @@ class _FakePlanner:
         )
 
 
+class _PreviewOnlyPlanner:
+    def __init__(self, target_path: Path):
+        self.target_path = target_path
+        self.build_called = False
+
+    def preview_target_path(self, _source: Path, _source_root: Path | None) -> Path:
+        return self.target_path
+
+    def build(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+        self.build_called = True
+        raise AssertionError("Existing-target skips must not create temporary workspaces")
+
+
 class _FakeRunner:
     def run(self, command: list[str], cwd: Path | None = None):  # noqa: ARG002
         Path(command[-1]).write_bytes(b"fake-mp4")
@@ -143,6 +157,11 @@ class _AssertingRunner:
             raise AssertionError(f"Expected existing cwd, got {cwd}")
         Path(command[-1]).write_bytes(b"fake-mp4")
         return CommandResult(command=command, return_code=0, stdout="", stderr="")
+
+
+class _ShutdownRunner:
+    def run(self, command: list[str], cwd: Path | None = None):  # noqa: ARG002
+        raise ShutdownRequestedError("Transcode interrupted because service shutdown was requested")
 
 
 class _BrokenReporter:
@@ -278,6 +297,140 @@ def test_pipeline_creates_missing_nested_target_directory_before_running_ffmpeg(
 
     assert report.status == "success"
     assert target.exists()
+
+
+def test_existing_target_skip_happens_before_plan_build_to_avoid_orphan_workspaces(tmp_path: Path):
+    source = tmp_path / "watch" / "movie.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    target = tmp_path / "optimized" / "movie.mp4"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"already optimized")
+    temp = tmp_path / "tmp" / ".movie.tmp.mp4"
+
+    cfg = AppConfig.from_dict(
+        {
+            "output": {
+                "mode": "keep_original",
+                "output_root": str(tmp_path / "optimized"),
+                "overwrite": False,
+            },
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+        }
+    )
+    state = StateStore(cfg.paths.state_db)
+    reporter = Reporter(cfg)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=reporter)
+
+    source_media = _media(source, "matroska,webm", codec_tag=None)
+    output_media = _media(temp, "mov,mp4,m4a,3gp,3g2,mj2", codec_tag="hvc1")
+    processor.analyzer = _FakeAnalyzer(source, temp, source_media, output_media)
+    processor.engine = _FakeEngine(
+        Decision(
+            strategy=Strategy.REMUX_ONLY,
+            case_label=CaseLabel.B,
+            reasons=["remux"],
+            expected_container="mp4",
+            expected_direct_play_safe=True,
+        ),
+        CompatibilityDetails(
+            container_ok=False,
+            video_ok=True,
+            audio_ok=True,
+            subtitle_ok=True,
+            dv_present=False,
+            dv_profile=None,
+            hdr10_present=False,
+            requires_container_change=True,
+            requires_audio_fix=False,
+            requires_subtitle_fix=False,
+            requires_video_transcode=False,
+            reasons=[],
+        ),
+    )
+    planner = _PreviewOnlyPlanner(target)
+    processor.planner = planner
+
+    try:
+        report = processor.process_path(source, source.parent, dry_run_override=False)
+    finally:
+        state.close()
+
+    assert report.status == "skipped"
+    assert report.case_label == "TARGET_EXISTS"
+    assert planner.build_called is False
+    assert not (tmp_path / "tmp").exists()
+
+
+def test_shutdown_failure_does_not_persist_file_dedupe_state(tmp_path: Path):
+    source = tmp_path / "watch" / "episode.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    target = tmp_path / "optimized" / "episode.mp4"
+    temp = target.parent / ".episode.tmp.mp4"
+
+    cfg = AppConfig.from_dict(
+        {
+            "output": {
+                "mode": "keep_original",
+                "output_root": str(tmp_path / "optimized"),
+                "overwrite": True,
+            },
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+        }
+    )
+    state = StateStore(cfg.paths.state_db)
+    reporter = Reporter(cfg)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=reporter)
+
+    source_media = _media(source, "matroska,webm", codec_tag=None)
+    output_media = _media(temp, "mov,mp4,m4a,3gp,3g2,mj2", codec_tag="hvc1")
+    processor.analyzer = _FakeAnalyzer(source, temp, source_media, output_media)
+    processor.engine = _FakeEngine(
+        Decision(
+            strategy=Strategy.REMUX_ONLY,
+            case_label=CaseLabel.B,
+            reasons=["remux"],
+            expected_container="mp4",
+            expected_direct_play_safe=True,
+        ),
+        CompatibilityDetails(
+            container_ok=False,
+            video_ok=True,
+            audio_ok=True,
+            subtitle_ok=True,
+            dv_present=False,
+            dv_profile=None,
+            hdr10_present=False,
+            requires_container_change=True,
+            requires_audio_fix=False,
+            requires_subtitle_fix=False,
+            requires_video_transcode=False,
+            reasons=[],
+        ),
+    )
+    processor.planner = _FakePlanner(source, target, temp)
+    processor.runner = _ShutdownRunner()
+
+    try:
+        report = processor.process_path(source, source.parent, dry_run_override=False)
+        record = state.get_file_record(source)
+    finally:
+        state.close()
+
+    assert report.status == "failed"
+    assert report.error_class == "ShutdownRequestedError"
+    assert record is None
 
 
 def test_pipeline_can_publish_to_output_root_and_delete_source_after_success(tmp_path: Path):
@@ -507,6 +660,89 @@ def test_pipeline_can_delete_source_after_success_for_selected_watch_root(tmp_pa
     assert report.status == "success"
     assert target.exists()
     assert not source.exists()
+
+
+def test_pipeline_publishes_no_op_source_before_deleting_selected_watch_root(tmp_path: Path):
+    series_root = tmp_path / "watch" / "Series" / "Transcode"
+    source = series_root / "TheBoys" / "S5" / "episode.mp4"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"already-compatible")
+    target = tmp_path / "Series-opti" / "TheBoys" / "S5" / "episode.mp4"
+    temp = tmp_path / "tmp" / ".episode.tmp.mp4"
+
+    cfg = AppConfig.from_dict(
+        {
+            "watch": {
+                "folders": [str(series_root)],
+            },
+            "output": {
+                "mode": "keep_original",
+                "output_root": str(tmp_path / "Films-opti"),
+                "output_root_overrides": {
+                    str(series_root): str(tmp_path / "Series-opti"),
+                },
+                "overwrite": True,
+                "delete_original_after_success": False,
+                "delete_original_after_success_roots": [str(series_root)],
+            },
+            "paths": {
+                "state_db": str(tmp_path / "state" / "reeltranscode.db"),
+                "reports_dir": str(tmp_path / "reports"),
+                "csv_summary": str(tmp_path / "reports" / "summary.csv"),
+                "temp_dir": str(tmp_path / "tmp"),
+            },
+        }
+    )
+    state = StateStore(cfg.paths.state_db)
+    reporter = Reporter(cfg)
+    processor = PipelineProcessor(config=cfg, state_store=state, reporter=reporter)
+
+    source_media = _media(source, "mov,mp4,m4a,3gp,3g2,mj2", codec_tag="hvc1")
+    output_media = _media(target, "mov,mp4,m4a,3gp,3g2,mj2", codec_tag="hvc1")
+    fake_analyzer = _FakeAnalyzer(
+        source,
+        temp,
+        source_media,
+        output_media,
+        published_paths=[target],
+        published_output_media=output_media,
+    )
+    processor.analyzer = fake_analyzer
+    processor.engine = _FakeEngine(
+        Decision(
+            strategy=Strategy.NO_OP,
+            case_label=CaseLabel.A,
+            reasons=["Already Apple Direct Play compatible"],
+            expected_container="mp4",
+            expected_direct_play_safe=True,
+        ),
+        CompatibilityDetails(
+            container_ok=True,
+            video_ok=True,
+            audio_ok=True,
+            subtitle_ok=True,
+            dv_present=False,
+            dv_profile=None,
+            hdr10_present=False,
+            requires_container_change=False,
+            requires_audio_fix=False,
+            requires_subtitle_fix=False,
+            requires_video_transcode=False,
+            reasons=[],
+        ),
+    )
+    processor.planner = _FakePlanner(source, target, temp)
+
+    try:
+        report = processor.process_path(source, series_root, dry_run_override=False)
+    finally:
+        state.close()
+
+    assert report.status == "success"
+    assert target.read_bytes() == b"already-compatible"
+    assert not source.exists()
+    assert target in fake_analyzer.analyze_calls
+    assert any("without re-encoding" in note for note in report.validations)
 
 
 def test_pipeline_uses_temp_path_volume_for_capacity_check_when_workspace_is_absent(
